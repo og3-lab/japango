@@ -6,21 +6,28 @@ Standard library only (Python 3.8+).
       Split the body into paragraphs and sentences. Writes, inside WORKDIR,
       <stem>.units.jsonl (one unit per sentence or line), <stem>.annotated.txt
       (what the finder reads, one "[p2-s3] sentence" per line) and
-      <stem>.orig.md (the units rendered back). Exits 1 when the rendered text
-      differs from the source.
+      <stem>.orig.md (the units rendered back). The first row of the units file
+      records the source path, so assemble can write next to it. Exits 1 when
+      the rendered text differs from the source.
 
   merge UNITS OUT MODE FINDINGS [FINDINGS ...]
       MODE is "agree" (an edit needs every run to propose an edit for that ID;
       the default for two runs) or "union" (any run's edit counts). Questions
-      are always the union. Also adds a mechanical finding for bold that wraps
+      are always the union, and a keep from any run is kept as a keep row. One
+      finding may carry several questions as 〔問い1〕〔問い2〕. Also adds a mechanical finding for bold that wraps
       a whole sentence or appears twice in one sentence.
 
-  assemble UNITS MERGED OUT_MD LOG_JSON
+  assemble UNITS MERGED LOG_JSON [--out OUT_MD]
+      Write the revised text to <source stem>.japango.md next to the source
+      (<stem>.japango-2.md, -3 ... when the name is taken; the source itself is
+      never written). --out writes elsewhere instead.
       Apply the merged findings without a separate rewriting step:
       delete -> the sentence goes, rewrite -> the finder's sentence replaces it,
       ask -> the sentence stays and gets a 〔確認n〕 mark. A rewritten sentence that
       brings a cause, limit or time word, or a number, that the whole original
-      never had is put back to the original. Questions are listed at the end.
+      never had is put back to the original. Questions are listed at the end;
+      several questions on one sentence share one mark. keep rows are logged in
+      changes as 残した.
 """
 import argparse
 import json
@@ -185,7 +192,8 @@ def cmd_ids(src, workdir):
     out.mkdir(parents=True, exist_ok=True)
     stem = Path(src).stem
     front = split_front(text)[0]
-    write_jsonl(out / f"{stem}.units.jsonl", [{"front": front}] + us if front else us)
+    meta = {"front": front, "source": str(Path(src).resolve())}
+    write_jsonl(out / f"{stem}.units.jsonl", [meta] + us)
     write_text(out / f"{stem}.annotated.txt",
                "".join(f"[{u['id']}] {u['text'].strip()}\n" for u in us if not u.get("raw") and u["text"].strip()))
     rendered = render(us)
@@ -196,30 +204,44 @@ def cmd_ids(src, workdir):
     return 0 if ok else 1
 
 
+def load_meta(path):
+    """The first row without an id: {"front": ..., "source": ...} (may be empty)."""
+    return next((r for r in read_jsonl(path) if "id" not in r), {})
+
+
 def load_units(path):
     rows = read_jsonl(path)
-    front = next((r["front"] for r in rows if "front" in r and "id" not in r), "")
+    front = next((r.get("front", "") for r in rows if "id" not in r), "")
     return front, [r for r in rows if "id" in r]
 
 
 # ---------- merge ----------
 
-def clean_ask(q):
-    """〔誰が判断したか〕 -> 誰が判断したか (only when the whole text is one bracket)."""
-    q = (q or "").strip()
-    if q.startswith("〔") and q.endswith("〕") and q.count("〔") == 1:
-        return q[1:-1]
-    return q
-
-
 def useful_ask(q):
     return bool(q) and not (ASK_DROP.search(q) and not ASK_KEEP.search(q))
+
+
+def split_asks(q):
+    """〔誰が判断したか〕〔根拠は何か〕 -> ["誰が判断したか", "根拠は何か"].
+    Text without brackets is one question."""
+    q = (q or "").strip()
+    parts = [x.strip() for x in re.findall(r"〔([^〔〕]*)〕", q)]
+    parts = [x for x in parts if x]
+    if not parts:
+        return [q] if q else []
+    return parts
+
+
+def useful_asks(q):
+    """The questions of one finding worth asking, joined back as 〔..〕〔..〕."""
+    return "".join(f"〔{x}〕" for x in split_asks(q) if useful_ask(x))
 
 
 def merge_findings(rows):
     """Collapse several findings for one ID into one row.
 
-    keep wins (the less destructive side when runs disagree). Otherwise an edit
+    keep wins (the less destructive side when runs disagree); a keep that also
+    has a question becomes an ask, since the sentence stays either way. Otherwise an edit
     (rewrite, then delete) wins over ask, so a run that only asked cannot keep a
     sentence another run fixed; its question still goes to the confirmation list.
     Questions come from the earliest run that asked, so two runs do not stack
@@ -234,8 +256,11 @@ def merge_findings(rows):
         ask_rows = [r for r in rs if r["route"] == "ask" and r.get("fix")]
         first_src = min((r.get("src", 0) for r in ask_rows), default=None)
         asks = "".join(r["fix"] for r in ask_rows if r.get("src", 0) == first_src)
-        if "keep" in routes:
-            merged.append({"id": i, "route": "keep", "fix": ""})
+        if "keep" in routes and asks:
+            merged.append({"id": i, "route": "ask", "fix": asks})
+        elif "keep" in routes:
+            first = next(r for r in rs if r["route"] == "keep")
+            merged.append({"id": i, "route": "keep", "fix": "", "pattern": first.get("pattern", "")})
         elif "rewrite" in routes:
             first = next(r for r in rs if r["route"] == "rewrite")
             merged.append({"id": i, "route": "rewrite", "fix": first.get("fix", ""), "ask": asks,
@@ -250,7 +275,8 @@ def merge_findings(rows):
 
 
 def merge_findings_agree(rows, runs):
-    """Edits only where every run proposed an edit for the ID; questions are the union."""
+    """Edits only where every run proposed an edit for the ID; questions are the union.
+    A keep from any run stays as a keep row, so the sentence is counted as kept."""
     by_id = {}
     for r in rows:
         by_id.setdefault(r["id"], []).append(r)
@@ -258,7 +284,7 @@ def merge_findings_agree(rows, runs):
     for rs in by_id.values():
         editors = {r.get("src", 0) for r in rs if r["route"] in EDIT_ROUTES}
         if any(r["route"] == "keep" for r in rs) or len(editors) < runs:
-            rs = [r for r in rs if r["route"] == "ask"]
+            rs = [r for r in rs if r["route"] in ("ask", "keep")]
         kept += rs
     return merge_findings(kept)
 
@@ -303,8 +329,10 @@ def merge(us, runs, mode="agree"):
             if (i, route) in seen:
                 continue
             seen.add((i, route))
-            if route == "ask" and not useful_ask(r.get("fix")):
-                continue
+            if route == "ask":
+                r = dict(r, fix=useful_asks(r.get("fix")))
+                if not r["fix"]:
+                    continue
             rows.append(dict(r, src=n))
     merged = merge_findings_agree(rows, len(runs)) if mode == "agree" else merge_findings(rows)
     # the bold check only speaks for sentences no finder run mentioned
@@ -348,9 +376,11 @@ def assemble(us, merged):
         if not u or u.get("raw"):
             skipped.append(f.get("id"))
             continue
-        if f["route"] == "keep":
-            continue
         old = u["text"]
+        if f["route"] == "keep":
+            changes.append({"id": f["id"], "route": "keep", "result": "残した",
+                            "pattern": f.get("pattern", ""), "before": old.strip(), "after": old.strip()})
+            continue
         lead = old[: len(old) - len(old.lstrip())]
         prefix = BLOCK_START.match(old.lstrip())
         prefix = prefix.group(1) if prefix else ""
@@ -373,7 +403,8 @@ def assemble(us, merged):
             new = prefix + new
         u["text"] = (lead + new) if new else ""
         if u["text"] != old:
-            changes.append({"id": f["id"], "route": f["route"], "pattern": f.get("pattern", ""),
+            changes.append({"id": f["id"], "route": f["route"], "result": "変えた",
+                            "pattern": f.get("pattern", ""),
                             "before": old.strip(), "after": u["text"].strip()})
 
     # The body carries only a short mark after the sentence; the questions go to the
@@ -395,30 +426,66 @@ def assemble(us, merged):
     for c in confirm:
         c["at"] = anchor(c["id"])
     confirm.sort(key=lambda c: (order[c["at"]], order[c["id"]]))
+    # a question already listed is not listed again; a finding whose questions
+    # were all listed before gets no mark of its own
     unique, seen = [], set()
     for c in confirm:
-        if c["ask"] in seen:
+        qs = [q for q in split_asks(c["ask"]) if q not in seen]
+        if not qs:
             continue
-        seen.add(c["ask"])
+        seen.update(qs)
+        c["questions"] = qs
         unique.append(c)
     for n, c in enumerate(unique, 1):
         c["no"] = n
         by_id[c["at"]]["text"] += f"〔確認{n}〕"
     body = render(us)
     if unique:
-        body += "\n---\n\n## 確認欄\n\n" + "".join(f"- 〔確認{c['no']}〕{clean_ask(c['ask'])}\n" for c in unique)
+        body += "\n---\n\n## 確認欄\n\n" + "".join(confirm_lines(c) for c in unique)
+    edited = [c for c in changes if c["route"] != "keep"]
     log = {"changes": changes, "reverted": reverted, "confirm": unique,
-           "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - len(changes)}
+           "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - len(edited)}
     return body, log
 
 
-def cmd_assemble(units_path, merged_path, out_path, log_path):
+def confirm_lines(c):
+    """One question on the same line as its mark; several, one per line under it."""
+    qs = c["questions"]
+    if len(qs) == 1:
+        return f"- 〔確認{c['no']}〕{qs[0]}\n"
+    return f"- 〔確認{c['no']}〕\n" + "".join(f"  - {q}\n" for q in qs)
+
+
+def output_path(source):
+    """<stem>.japango.md next to source, numbered when the name is taken."""
+    src = Path(source)
+    n = 1
+    while True:
+        suffix = "" if n == 1 else f"-{n}"
+        cand = src.with_name(f"{src.stem}.japango{suffix}.md")
+        if not cand.exists() and cand.resolve() != src.resolve():
+            return cand
+        n += 1
+
+
+def cmd_assemble(units_path, merged_path, log_path, out_path=None):
+    source = load_meta(units_path).get("source")
+    if out_path is None:
+        if not source:
+            print("assemble: the units file has no source path; give --out", file=sys.stderr)
+            return 2
+        out_path = output_path(source)
+    elif source and Path(out_path).resolve() == Path(source).resolve():
+        print("assemble: --out is the source itself; the source is never overwritten", file=sys.stderr)
+        return 2
     front, us = load_units(units_path)
     body, log = assemble(us, read_jsonl(merged_path))
     write_text(out_path, front + body)
     write_text(log_path, json.dumps(log, ensure_ascii=False, indent=1) + "\n")
-    print(json.dumps({"changed": len(log["changes"]), "reverted": len(log["reverted"]),
-                      "confirm": len(log["confirm"]), "out": str(out_path)}, ensure_ascii=False))
+    kept = sum(1 for c in log["changes"] if c["route"] == "keep")
+    print(json.dumps({"changed": len(log["changes"]) - kept, "kept": kept,
+                      "reverted": len(log["reverted"]), "confirm": len(log["confirm"]),
+                      "out": str(out_path)}, ensure_ascii=False))
     return 0
 
 
@@ -438,14 +505,15 @@ def main(argv=None):
     s = sub.add_parser("assemble", help="build the revised text")
     s.add_argument("units")
     s.add_argument("merged")
-    s.add_argument("out_md")
     s.add_argument("log_json")
+    s.add_argument("--out", dest="out_md", default=None,
+                   help="write here instead of <source stem>.japango.md next to the source")
     args = p.parse_args(argv)
     if args.cmd == "ids":
         return cmd_ids(args.src, args.workdir)
     if args.cmd == "merge":
         return cmd_merge(args.units, args.out, args.mode, args.findings)
-    return cmd_assemble(args.units, args.merged, args.out_md, args.log_json)
+    return cmd_assemble(args.units, args.merged, args.log_json, args.out_md)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -9,6 +11,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "japango" / "scripts"))
 
 import japango as jp  # noqa: E402
+
+WORK = ROOT / ".work"
+
+
+def tmpdir():
+    """Temporary folders go under the repository's .work/ (ignored by git)."""
+    WORK.mkdir(exist_ok=True)
+    return Path(tempfile.mkdtemp(dir=WORK))
+
+
+def run_cli(args):
+    """(exit code, the JSON the command printed)."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = jp.main(args)
+    return code, json.loads(out.getvalue()) if out.getvalue().strip() else None
 
 DOC = """---
 title: 例
@@ -60,7 +78,7 @@ class RoundTrip(unittest.TestCase):
         self.assertTrue(unit(us, "p5-s1").get("raw"))
 
     def test_cli_ids_in_workdir(self):
-        tmp = Path(tempfile.mkdtemp(dir=ROOT / "tests"))
+        tmp = tmpdir()
         try:
             src = tmp / "doc.md"
             jp.write_text(src, DOC)
@@ -102,6 +120,43 @@ class Merge(unittest.TestCase):
         merged, warnings = jp.merge(self.us, [a], "agree")
         self.assertEqual(merged, [])
         self.assertEqual(len(warnings), 1)
+
+    def test_keep_twice_stays_as_keep_row(self):
+        a = [{"id": "p1-s1", "route": "keep", "pattern": "型17"}, {"id": "p1-s2", "route": "delete"}]
+        b = [{"id": "p1-s1", "route": "keep"}, {"id": "p1-s2", "route": "keep"}]
+        for mode in ("agree", "union"):
+            merged, _ = jp.merge(self.us, [a, b], mode)
+            self.assertEqual([(r["id"], r["route"]) for r in merged],
+                             [("p1-s1", "keep"), ("p1-s2", "keep")], mode)
+
+    def test_keep_with_question_becomes_ask(self):
+        a = [{"id": "p1-s1", "route": "keep"}]
+        b = [{"id": "p1-s1", "route": "ask", "fix": "〔根拠は何か〕"}]
+        merged, _ = jp.merge(self.us, [a, b], "agree")
+        self.assertEqual([(r["route"], r["fix"]) for r in merged], [("ask", "〔根拠は何か〕")])
+
+    def test_two_questions_kept_and_deadline_one_dropped(self):
+        a = [{"id": "p1-s1", "route": "ask", "fix": "〔誰が判断したか〕〔いつまでに直すか〕〔根拠は何か〕"}]
+        merged, _ = jp.merge(self.us, [a], "agree")
+        self.assertEqual(merged[0]["fix"], "〔誰が判断したか〕〔根拠は何か〕")
+
+    def test_cli_counts_keep_in_merge_and_log(self):
+        tmp = tmpdir()
+        try:
+            src = tmp / "d.md"
+            jp.write_text(src, "残す文。次の文。\n")
+            run_cli(["ids", str(src), str(tmp)])
+            for n in (1, 2):
+                jp.write_text(tmp / f"f{n}.jsonl", json.dumps({"id": "p1-s1", "route": "keep"}) + "\n")
+            _, out = run_cli(["merge", str(tmp / "d.units.jsonl"), str(tmp / "m.jsonl"), "agree",
+                              str(tmp / "f1.jsonl"), str(tmp / "f2.jsonl")])
+            self.assertEqual(out["routes"]["keep"], 1)
+            _, out = run_cli(["assemble", str(tmp / "d.units.jsonl"), str(tmp / "m.jsonl"), str(tmp / "log.json")])
+            self.assertEqual((out["changed"], out["kept"]), (0, 1))
+            log = json.loads((tmp / "log.json").read_text(encoding="utf-8"))
+            self.assertEqual([(c["id"], c["result"]) for c in log["changes"]], [("p1-s1", "残した")])
+        finally:
+            shutil.rmtree(tmp)
 
     def test_bold_found_mechanically(self):
         us = [{"id": "p1-s1", "text": "結果は**12 秒**から**3 秒**になった。", "para": 1}]
@@ -152,21 +207,68 @@ class Assemble(unittest.TestCase):
         ])
         self.assertEqual(body, "## まとめ\n\n- 対策を進めます。\n")
 
-    def test_cli_assemble_writes_log(self):
-        tmp = Path(tempfile.mkdtemp(dir=ROOT / "tests"))
+    def test_cli_assemble_writes_next_to_source_and_numbers(self):
+        tmp = tmpdir()
         try:
             src = tmp / "d.md"
             jp.write_text(src, "残す文。消す文。\n")
-            jp.main(["ids", str(src), str(tmp)])
-            jp.write_text(tmp / "f.jsonl", json.dumps({"id": "p1-s2", "route": "delete"}) + "\n")
-            jp.main(["merge", str(tmp / "d.units.jsonl"), str(tmp / "m.jsonl"), "agree", str(tmp / "f.jsonl")])
-            jp.main(["assemble", str(tmp / "d.units.jsonl"), str(tmp / "m.jsonl"),
-                     str(tmp / "out.md"), str(tmp / "log.json")])
-            self.assertEqual((tmp / "out.md").read_text(encoding="utf-8"), "残す文。\n")
-            log = json.loads((tmp / "log.json").read_text(encoding="utf-8"))
+            work = tmp / "d.japango"
+            run_cli(["ids", str(src), str(work)])
+            jp.write_text(work / "f.jsonl", json.dumps({"id": "p1-s2", "route": "delete"}) + "\n")
+            run_cli(["merge", str(work / "d.units.jsonl"), str(work / "m.jsonl"), "agree", str(work / "f.jsonl")])
+            args = ["assemble", str(work / "d.units.jsonl"), str(work / "m.jsonl"), str(work / "log.json")]
+            code, out = run_cli(args)
+            self.assertEqual(code, 0)
+            self.assertEqual(Path(out["out"]), tmp / "d.japango.md")
+            self.assertEqual((tmp / "d.japango.md").read_text(encoding="utf-8"), "残す文。\n")
+            log = json.loads((work / "log.json").read_text(encoding="utf-8"))
             self.assertEqual(log["changes"][0]["before"], "消す文。")
+            # a second run does not overwrite the first output, and the source stays as it was
+            self.assertEqual(run_cli(args)[0], 0)
+            self.assertEqual((tmp / "d.japango-2.md").read_text(encoding="utf-8"), "残す文。\n")
+            self.assertEqual(src.read_text(encoding="utf-8"), "残す文。消す文。\n")
+            # --out writes elsewhere, but never onto the source
+            self.assertEqual(run_cli(args + ["--out", str(tmp / "other.md")])[0], 0)
+            self.assertTrue((tmp / "other.md").exists())
+            self.assertEqual(run_cli(args + ["--out", str(src)])[0], 2)
+            self.assertEqual(src.read_text(encoding="utf-8"), "残す文。消す文。\n")
         finally:
             shutil.rmtree(tmp)
+
+    def test_output_path_skips_taken_names(self):
+        tmp = tmpdir()
+        try:
+            src = tmp / "a.md"
+            jp.write_text(src, "x\n")
+            self.assertEqual(jp.output_path(src).name, "a.japango.md")
+            jp.write_text(tmp / "a.japango.md", "")
+            jp.write_text(tmp / "a.japango-2.md", "")
+            self.assertEqual(jp.output_path(src).name, "a.japango-3.md")
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_keep_logged_as_kept(self):
+        body, log = self.build("残す文。消す文。\n", [
+            {"id": "p1-s1", "route": "keep", "pattern": "型17 残す対比"},
+            {"id": "p1-s2", "route": "delete"},
+        ])
+        self.assertEqual(body, "残す文。\n")
+        kept = [c for c in log["changes"] if c["result"] == "残した"]
+        self.assertEqual([(c["id"], c["route"]) for c in kept], [("p1-s1", "keep")])
+        self.assertEqual(kept[0]["before"], kept[0]["after"])
+        self.assertEqual(log["unchanged_ids"], 1)
+
+    def test_two_questions_share_one_mark(self):
+        body, log = self.build("一つ目。二つ目。三つ目。\n", [
+            {"id": "p1-s1", "route": "ask", "fix": "〔誰が決めたか〕"},
+            {"id": "p1-s2", "route": "ask", "fix": "〔誰が判断したか〕〔根拠は何か〕"},
+            {"id": "p1-s3", "route": "ask", "fix": "〔根拠は何か〕〔出典は何か〕"},
+        ])
+        self.assertIn("一つ目。〔確認1〕二つ目。〔確認2〕三つ目。〔確認3〕", body)
+        self.assertIn("- 〔確認1〕誰が決めたか\n"
+                      "- 〔確認2〕\n  - 誰が判断したか\n  - 根拠は何か\n"
+                      "- 〔確認3〕出典は何か\n", body)
+        self.assertEqual(log["confirm"][1]["questions"], ["誰が判断したか", "根拠は何か"])
 
 
 if __name__ == "__main__":

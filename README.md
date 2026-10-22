@@ -51,8 +51,8 @@ japango で report.md を直して
 
 | ファイル | 中身 |
 |---|---|
-| `<原稿の名前>.japango.md` | 直した本文。末尾に確認欄（書き手に聞く問い）。原稿のファイルは書き換えません |
-| `<原稿の名前>.japango/log.json` | 変えた文の前後（`changes`）、原文に戻した文と理由の語（`reverted`）、確認欄（`confirm`） |
+| `<原稿の名前>.japango.md` | 直した本文。末尾に確認欄（書き手に聞く問い）。同じ名前があれば `<原稿の名前>.japango-2.md` のように番号が付きます。原稿のファイルは書き換えません |
+| `<原稿の名前>.japango/log.json` | 変えた文と残した文の前後（`changes`）、原文に戻した文と理由の語（`reverted`）、確認欄（`confirm`） |
 | `<原稿の名前>.japango/` のほかのファイル | 文の一覧、ID つきの原稿、見つける役の指摘一覧、まとめた指摘 |
 
 確認欄の問い（「誰が判断したか」「根拠は何か」など）は、原文に事実が無いため直せなかった文です。答えを足してもう一度頼むと、その事実を使って直せます。
@@ -63,7 +63,8 @@ japango で report.md を直して
 python skills/japango/scripts/japango.py ids draft.md work
 # work/draft.annotated.txt を見つける役に読ませ、work/findings1.jsonl に指摘を書かせる
 python skills/japango/scripts/japango.py merge work/draft.units.jsonl work/merged.jsonl agree work/findings1.jsonl work/findings2.jsonl
-python skills/japango/scripts/japango.py assemble work/draft.units.jsonl work/merged.jsonl work/out.md work/log.json
+python skills/japango/scripts/japango.py assemble work/draft.units.jsonl work/merged.jsonl work/log.json
+# draft.md の横に draft.japango.md ができる（別の場所に書くときは --out パス）
 ```
 
 ## 試験の結果
