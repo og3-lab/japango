@@ -271,5 +271,73 @@ class Assemble(unittest.TestCase):
         self.assertEqual(log["confirm"][1]["questions"], ["誰が判断したか", "根拠は何か"])
 
 
+class Marks(unittest.TestCase):
+    """The 〔確認n〕 mark sits right after the sentence's end mark, and whatever
+    separated it from the next sentence stays as it was."""
+
+    def build(self, text, findings):
+        return jp.assemble(jp.units(text), findings)[0].split("\n---\n")[0]
+
+    def test_mark_right_after_period_space_kept(self):
+        ask = [{"id": "p1-s1", "route": "ask", "fix": "〔誰か〕"}]
+        self.assertEqual(self.build("一つ目。 二つ目。\n", ask), "一つ目。〔確認1〕 二つ目。\n")
+        self.assertEqual(self.build("一つ目。二つ目。\n", ask), "一つ目。〔確認1〕二つ目。\n")
+        self.assertEqual(self.build("「引用です。」次の文。\n", ask), "「引用です。」〔確認1〕次の文。\n")
+
+    def test_mark_before_hard_break_spaces(self):
+        text = "一行目の文。  \n二行目の文。\n三行目。\n"
+        self.assertEqual(self.build(text, [{"id": "p1-s1", "route": "ask", "fix": "〔誰か〕"}]),
+                         "一行目の文。〔確認1〕  \n二行目の文。\n三行目。\n")
+        # a deleted line's question goes to the line before, still right after its period
+        self.assertEqual(self.build(text, [{"id": "p1-s2", "route": "delete", "ask": "〔誰か〕"}]),
+                         "一行目の文。〔確認1〕  \n三行目。\n")
+
+
+class Reports(unittest.TestCase):
+    def build(self, text, findings):
+        return jp.assemble(jp.units(text), findings)
+
+    def test_dangling_reference_reported_not_fixed(self):
+        text = "経理課と営業課が集計した。両課は翌日に報告した。結果は全員に共有した。\n"
+        body, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
+        self.assertTrue(body.startswith("両課は翌日に報告した。結果は全員に共有した。\n"))
+        self.assertEqual(log["dangling"], [{"deleted": "p1-s1", "words": ["経理課", "営業課"],
+                                            "at": "p1-s2", "ref": "両課"}])
+        self.assertTrue(body.rstrip("\n").endswith(
+            "- 削った文が指していた語が残っていません: 経理課・営業課（p1-s2 の「両課」が受けている。p1-s1 を削った）"))
+
+    def test_dangling_not_reported_when_word_remains_or_nothing_points(self):
+        text = "新方式を試した。新方式は速かった。この方式を続ける。\n"
+        _, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
+        self.assertEqual(log["dangling"], [])
+        text = "経理課が集計した。結果は翌日に出た。担当は全員に共有した。\n"
+        body, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
+        self.assertEqual(log["dangling"], [])
+        self.assertNotIn("確認欄", body)
+        # a longer head must be part of the word: この設定 does not point at 特定
+        text = "原因を特定した。この設定を戻した。\n"
+        _, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
+        self.assertEqual(log["dangling"], [])
+
+    def test_orphan_paragraph_reported(self):
+        text = "一つ目の文。二つ目の文。\n\n三つ目。四つ目。五つ目。\n\n- 項目一。\n- 項目二。\n"
+        body, log = self.build(text, [{"id": "p1-s2", "route": "delete"}, {"id": "p2-s1", "route": "delete"},
+                                      {"id": "p3-s2", "route": "delete"}])
+        self.assertEqual([(o["para"], o["id"], o["deleted"]) for o in log["orphans"]], [(1, "p1-s1", ["p1-s2"])])
+        self.assertIn("- 1 文だけ残った段落: 〔一つ目の文。〕（p1-s1）\n", body)
+        self.assertTrue(body.startswith("一つ目の文。\n\n四つ目。五つ目。\n\n- 項目一。\n"))
+        # a text left with one paragraph has nothing to float among
+        _, log = self.build("一つ目の文。二つ目の文。\n", [{"id": "p1-s2", "route": "delete"}])
+        self.assertEqual(log["orphans"], [])
+
+    def test_notes_follow_questions(self):
+        text = "経理課と営業課が集計した。両課は翌日に報告した。\n\n次の段落。\n"
+        body, _ = self.build(text, [{"id": "p1-s1", "route": "delete", "ask": "〔誰が決めたか〕"}])
+        lines = body.split("## 確認欄\n\n")[1].splitlines()
+        self.assertEqual(lines[0], "- 〔確認1〕誰が決めたか")
+        self.assertTrue(lines[1].startswith("- 削った文が指していた語が残っていません: 経理課・営業課"))
+        self.assertEqual(lines[2], "- 1 文だけ残った段落: 〔両課は翌日に報告した。〕（p1-s2）")
+
+
 if __name__ == "__main__":
     unittest.main()

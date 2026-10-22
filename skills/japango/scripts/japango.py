@@ -28,6 +28,11 @@ Standard library only (Python 3.8+).
       never had is put back to the original. Questions are listed at the end;
       several questions on one sentence share one mark. keep rows are logged in
       changes as 残した.
+      Two things are only reported, never fixed: a word that appears only in a
+      deleted sentence while a later sentence still points at it (両課, この方式,
+      同社 ...) goes to "dangling", and a prose paragraph left with one sentence
+      after deletions goes to "orphans". Both are listed at the end of the
+      confirmation list.
 """
 import argparse
 import json
@@ -53,6 +58,12 @@ BOLD = re.compile(r"\*\*(.+?)\*\*")
 # keep questions about who decided, why, and what caused it
 ASK_KEEP = re.compile(r"誰|なぜ|理由|根拠|原因|どの|何を|出典")
 ASK_DROP = re.compile(r"いつまで|期限|期日|予定")
+
+# nouns for the dangling-reference check: runs of 2+ kanji or katakana
+NOUN = re.compile(r"[\u4E00-\u9FFF々〆ヶァ-ヴー]{2,}")
+# a pointing word and the head noun right after it (両課, この方式, 同社, 前述の手順)
+POINTER = re.compile(r"(?:(?<![\u4E00-\u9FFF々])(?:両|同|当該|上記の?|前述の?|先の)|この|その|これらの|それらの)"
+                     r"([\u4E00-\u9FFF々〆ヶァ-ヴー]{1,6})")
 
 
 # ---------- files ----------
@@ -382,6 +393,8 @@ def assemble(us, merged):
                             "pattern": f.get("pattern", ""), "before": old.strip(), "after": old.strip()})
             continue
         lead = old[: len(old) - len(old.lstrip())]
+        # trailing spaces (a Markdown hard break at the end of a line) stay where they were
+        trail = old[len(old.rstrip()):]
         prefix = BLOCK_START.match(old.lstrip())
         prefix = prefix.group(1) if prefix else ""
         if f["route"] == "delete":
@@ -401,7 +414,7 @@ def assemble(us, merged):
                 confirm.append({"id": f["id"], "ask": f["ask"]})
         if new and prefix and not new.startswith(prefix.strip()):
             new = prefix + new
-        u["text"] = (lead + new) if new else ""
+        u["text"] = (lead + new + trail) if new else ""
         if u["text"] != old:
             changes.append({"id": f["id"], "route": f["route"], "result": "変えた",
                             "pattern": f.get("pattern", ""),
@@ -436,16 +449,94 @@ def assemble(us, merged):
         seen.update(qs)
         c["questions"] = qs
         unique.append(c)
+    dangling = dangling_refs(us, before)
+    orphans = orphan_paragraphs(us, before)
     for n, c in enumerate(unique, 1):
         c["no"] = n
-        by_id[c["at"]]["text"] += f"〔確認{n}〕"
+        add_mark(by_id[c["at"]], f"〔確認{n}〕")
     body = render(us)
-    if unique:
-        body += "\n---\n\n## 確認欄\n\n" + "".join(confirm_lines(c) for c in unique)
+    notes = [dangling_line(d) for d in dangling] + [orphan_line(o) for o in orphans]
+    if unique or notes:
+        body += "\n---\n\n## 確認欄\n\n" + "".join(confirm_lines(c) for c in unique) + "".join(notes)
     edited = [c for c in changes if c["route"] != "keep"]
     log = {"changes": changes, "reverted": reverted, "confirm": unique,
+           "dangling": dangling, "orphans": orphans,
            "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - len(edited)}
     return body, log
+
+
+def add_mark(u, mark):
+    """Put the mark right after the sentence's end mark (。 and its closing marks),
+    before any trailing spaces, so it never sits after a hard break or mid-line.
+    Whatever followed the sentence (the next sentence's leading space) is untouched."""
+    t = u["text"]
+    end = len(t.rstrip())
+    u["text"] = t[:end] + mark + t[end:]
+
+
+def deleted_ids(us, before):
+    return [u["id"] for u in us if before.get(u["id"]) and before[u["id"]].strip() and not u["text"]]
+
+
+def dangling_refs(us, before):
+    """Words that appear only in a deleted sentence, while a later remaining sentence
+    points at them (両課 -> 経理課・営業課, この方式 -> 新方式). Reported, not fixed.
+
+    A word is a candidate when it is in a deleted sentence and nowhere in the remaining
+    body; it is reported when a pointing word's head noun in a later remaining sentence
+    is part of the word (課 in 経理課, 方式 in 新方式)."""
+    order = {u["id"]: k for k, u in enumerate(us)}
+    remaining = "".join(u["text"] for u in us)
+    out = []
+    for i in deleted_ids(us, before):
+        words = []
+        for w in NOUN.findall(unbold(before[i])):
+            if w not in remaining and w not in words:
+                words.append(w)
+        if not words:
+            continue
+        for u in us[order[i] + 1:]:
+            if not u["text"] or u.get("raw"):
+                continue
+            for m in POINTER.finditer(u["text"]):
+                head = m.group(1)
+                # a one-character head (両課, 同社) matches the word ending in it; a longer
+                # head (この方式) must appear in the word, so 設定 does not catch 特定
+                hits = [w for w in words if head in w]
+                if hits:
+                    out.append({"deleted": i, "words": hits, "at": u["id"], "ref": m.group(0)})
+    return out
+
+
+def dangling_line(d):
+    return (f"- 削った文が指していた語が残っていません: {'・'.join(d['words'])}"
+            f"（{d['at']} の「{d['ref']}」が受けている。{d['deleted']} を削った）\n")
+
+
+def orphan_paragraphs(us, before):
+    """Prose paragraphs that had two or more sentences and keep exactly one after
+    deletions. Lists, headings, quotes, tables and code are not prose paragraphs.
+    A text that is down to one paragraph has no neighbours to float among, so
+    nothing is reported then."""
+    paras = {}
+    for u in us:
+        paras.setdefault(u["para"], []).append(u)
+    out = []
+    if sum(1 for xs in paras.values() if any(x["text"].strip() for x in xs)) < 2:
+        return out
+    for p, xs in paras.items():
+        if any(x.get("raw") or BLOCK_START.match(before[x["id"]].lstrip()) for x in xs):
+            continue
+        had = [x for x in xs if before[x["id"]].strip()]
+        left = [x for x in xs if x["text"].strip()]
+        if len(had) >= 2 and len(left) == 1:
+            out.append({"para": p, "id": left[0]["id"], "text": left[0]["text"].strip(),
+                        "deleted": [x["id"] for x in had if not x["text"].strip()]})
+    return out
+
+
+def orphan_line(o):
+    return f"- 1 文だけ残った段落: 〔{o['text']}〕（{o['id']}）\n"
 
 
 def confirm_lines(c):
@@ -485,6 +576,7 @@ def cmd_assemble(units_path, merged_path, log_path, out_path=None):
     kept = sum(1 for c in log["changes"] if c["route"] == "keep")
     print(json.dumps({"changed": len(log["changes"]) - kept, "kept": kept,
                       "reverted": len(log["reverted"]), "confirm": len(log["confirm"]),
+                      "dangling": len(log["dangling"]), "orphans": len(log["orphans"]),
                       "out": str(out_path)}, ensure_ascii=False))
     return 0
 

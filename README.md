@@ -11,7 +11,7 @@ AI に「自然に直して」と頼むと、直すべき文を見落とすか�
 1. **文に ID を振る**（`japango.py ids`）: 原稿を段落と文に分け、`[p2-s3]` のような ID を付けます。ID から原文に戻せることを毎回確かめます
 2. **見つける**: 別の目で読む「見つける役」が、型の一覧（`references/rubric.md`）に照らして、文ごとに「削る／言い換える（完成した文つき）／書き手に聞く／残す」を決めた指摘一覧を書きます。サブエージェントを使えるツールでは 2 回、独立に走らせます
 3. **まとめる**（`japango.py merge`）: 2 回の指摘のうち、削る・言い換えるは 2 回が一致した文だけを採ります。片方が「残す」と言った文は残します
-4. **組み立てる**（`japango.py assemble`）: 指摘を機械で原文に当てます。言い換えた文に、原文のどこにも無い原因・限定・時間の語（だけ・ため・まで など）や数字が入っていたら、その文は原文に戻します。書き手に聞く文には `〔確認1〕` の印を付け、問いを末尾の確認欄にまとめます
+4. **組み立てる**（`japango.py assemble`）: 指摘を機械で原文に当てます。言い換えた文に、原文のどこにも無い原因・限定・時間の語（だけ・ため・まで など）や数字が入っていたら、その文は原文に戻します。書き手に聞く文には `〔確認1〕` の印を付け、問いを末尾の確認欄にまとめます。削った文にしか出ない語を後の文が「両課」「この方式」のように受けている箇所と、削って 1 文だけ残った段落も、確認欄の末尾に出します（自動では直しません）
 
 指摘一覧に無い文は、構造上だれも触れません。
 
@@ -52,8 +52,8 @@ japango で report.md を直して
 | ファイル | 中身 |
 |---|---|
 | `<原稿の名前>.japango.md` | 直した本文。末尾に確認欄（書き手に聞く問い）。同じ名前があれば `<原稿の名前>.japango-2.md` のように番号が付きます。原稿のファイルは書き換えません |
-| `<原稿の名前>.japango/log.json` | 変えた文と残した文の前後（`changes`）、原文に戻した文と理由の語（`reverted`）、確認欄（`confirm`） |
-| `<原稿の名前>.japango/` のほかのファイル | 文の一覧、ID つきの原稿、見つける役の指摘一覧、まとめた指摘 |
+| `<原稿の名前>.japango/log.json` | 変えた文と残した文の前後（`changes`）、原文に戻した文と理由の語（`reverted`）、確認欄（`confirm`）、削った文が指していた語（`dangling`）、1 文だけ残った段落（`orphans`） |
+| `<原稿の名前>.japango/` のほかのファイル | 文の一覧、ID つきの原稿、見つける役の書き出し（`notes1.md`）と指摘一覧（`findings1.jsonl`）、まとめた指摘 |
 
 確認欄の問い（「誰が判断したか」「根拠は何か」など）は、原文に事実が無いため直せなかった文です。答えを足してもう一度頼むと、その事実を使って直せます。
 
@@ -61,7 +61,7 @@ japango で report.md を直して
 
 ```
 python skills/japango/scripts/japango.py ids draft.md work
-# work/draft.annotated.txt を見つける役に読ませ、work/findings1.jsonl に指摘を書かせる
+# work/draft.annotated.txt を見つける役に読ませ、work/notes1.md に書き出し、work/findings1.jsonl に指摘を書かせる
 python skills/japango/scripts/japango.py merge work/draft.units.jsonl work/merged.jsonl agree work/findings1.jsonl work/findings2.jsonl
 python skills/japango/scripts/japango.py assemble work/draft.units.jsonl work/merged.jsonl work/log.json
 # draft.md の横に draft.japango.md ができる（別の場所に書くときは --out パス）
