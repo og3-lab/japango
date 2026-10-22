@@ -105,6 +105,22 @@ class Merge(unittest.TestCase):
         merged, _ = jp.merge(self.us, [a, []], "union")
         self.assertEqual(merged[0]["route"], "rewrite")
 
+    def test_union_single_rewrite_is_marked(self):
+        a = [{"id": "p1-s2", "route": "rewrite", "fix": "新しい文。"},
+             {"id": "p1-s3", "route": "rewrite", "fix": "別の文。"},
+             {"id": "p1-s4", "route": "rewrite", "fix": "両方の文。"}]
+        b = [{"id": "p1-s4", "route": "rewrite", "fix": "両方の文。"}]
+        merged, _ = jp.merge(self.us, [a, b], "union")
+        asks = {r["id"]: r.get("ask", "") for r in merged}
+        self.assertIn("新しい文", asks["p1-s2"])
+        self.assertIn("別の文", asks["p1-s3"])
+        self.assertEqual(asks["p1-s4"], "")
+        body, log = jp.assemble([dict(u) for u in self.us], merged)
+        self.assertIn("〔確認1〕", body)
+        self.assertIn("〔確認2〕", body)
+        merged, _ = jp.merge(self.us, [a, b], "agree")
+        self.assertTrue(all(not r.get("ask") for r in merged))
+
     def test_keep_wins_and_asks_are_union(self):
         a = [{"id": "p1-s1", "route": "delete"}, {"id": "p1-s3", "route": "ask", "fix": "〔誰が決めたか〕"}]
         b = [{"id": "p1-s1", "route": "keep"}]

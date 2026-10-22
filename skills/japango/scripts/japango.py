@@ -50,6 +50,7 @@ EDIT_ROUTES = ("rewrite", "delete")
 
 # words that state a cause or a limit, and words that bound a time
 ADDED_MARKERS = ["だけ", "のみ", "紛れ", "ため", "により", "によって", "原因", "せいで"]
+SINGLE_REWRITE_ASK = "〔「{head}」の書き直しで、原文に無い行動・出来事が増えていないか〕"
 TIME_MARKERS = ["まで", "以降", "以前", "までに"]
 NUM = re.compile(r"\d+(?:\.\d+)?")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -346,6 +347,18 @@ def merge(us, runs, mode="agree"):
                     continue
             rows.append(dict(r, src=n))
     merged = merge_findings_agree(rows, len(runs)) if mode == "agree" else merge_findings(rows)
+    if mode == "union" and len(runs) > 1:
+        # a rewrite only one run proposed goes in, but the writer checks it: a single
+        # run's rewrite is where new actions or events slipped in during tests
+        editors = {}
+        for r in rows:
+            if r["route"] == "rewrite":
+                editors.setdefault(r["id"], set()).add(r["src"])
+        for m in merged:
+            if m["route"] == "rewrite" and len(editors.get(m["id"], ())) == 1:
+                head = (m.get("fix") or "").strip()
+                head = head[:15] + ("…" if len(head) > 15 else "")
+                m["ask"] = (m.get("ask") or "") + SINGLE_REWRITE_ASK.format(head=head)
     # the bold check only speaks for sentences no finder run mentioned
     mentioned = {r["id"] for r in rows}
     merged += [b for b in bold_findings(us) if b["id"] not in mentioned]
