@@ -1,0 +1,6 @@
+{"id": "p2-s1", "pattern": "型6", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p3-s1", "pattern": "型31", "quote": "", "effect": "", "route": "ask", "fix": "〔誰が判断したか〕"}
+{"id": "p9-s1", "pattern": "型7", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p9-s3", "pattern": "型7", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p5-s1", "route": "delete"}
+{"id": "p9-s2", "route": "rewrite", "fix": "1. 最後に、これまでの経緯を短くまとめると長い文になるのだ。"}

@@ -1,0 +1,11 @@
+{"id": "p2-s1", "pattern": "型6", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p2-s2", "pattern": "型12", "quote": "", "effect": "", "route": "rewrite", "fix": "全員が満足したため、20分で終わった。"}
+{"id": "p3-s1", "pattern": "型31", "quote": "", "effect": "", "route": "ask", "fix": "〔誰が判断したか〕〔いつまでに続けるか〕"}
+{"id": "p1-s1", "pattern": "型1", "quote": "", "effect": "", "route": "ask", "fix": "〔根拠は何か〕"}
+{"id": "p4-s1", "pattern": "型2", "quote": "", "effect": "", "route": "rewrite", "fix": "箇条の一と二を見る。"}
+{"id": "p9-s1", "pattern": "型7", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p9-s2", "pattern": "型7", "quote": "", "effect": "", "route": "keep", "fix": ""}
+{"id": "p99-s1", "route": "delete"}
+{"id": "p9-s3", "route": "weird"}
+not json
+{broken

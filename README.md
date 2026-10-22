@@ -35,9 +35,17 @@ mkdir -p .agents/skills
 cp -R /tmp/japango/skills/japango .agents/skills/japango
 ```
 
-スクリプトには Python 3.8 以上が要ります（標準ライブラリだけで動きます）。
+### 要るもの
 
-Windows の Codex では、作業環境（サンドボックス）から、利用者ごとに入れた Python（`%LOCALAPPDATA%\Programs\Python` の下）が見えない、または起動を拒まれることがあります。そのときは japango が止まって Python の場所を聞きます。すべての利用者向けに入れた Python（`C:\Program Files\Python3x` など）を使うか、Codex の設定でその Python の実行を許してください。
+Python 3.8 以上か Node.js 18 以上の、どちらか 1 つが入っていれば動きます。スクリプトは同じ中身のものを両方入れてあり（`japango.py` と `japango.mjs`。どちらも標準の機能だけで動きます）、AI が動く方を選びます。どちらで動かしたかは最後の報告に出ます。出てくるものは、どちらで動かしても一字一句同じです。
+
+どちらも入っていなければ、japango は止まって入れ方を案内します（自分では入れません）。
+
+- Windows: Node.js をおすすめします（`winget install OpenJS.NodeJS.LTS`、または [nodejs.org](https://nodejs.org/) のインストーラー）。Windows の Codex では、ふつうの入れ方で入れた Python（`%LOCALAPPDATA%\Programs\Python` の下）を、作業環境（サンドボックス）が起動させないことがあるためです
+- Mac: `brew install node`、または nodejs.org のインストーラー
+- Linux: たいてい `python3` が入っています
+
+入れた後は、Claude Code や Codex を開き直してから頼んでください。
 
 ## 使い方
 
@@ -59,7 +67,7 @@ japango で report.md を直して
 
 確認欄の問い（「誰が判断したか」「根拠は何か」など）は、原文に事実が無いため直せなかった文です。答えを足してもう一度頼むと、その事実を使って直せます。
 
-スクリプトだけを手で使うこともできます。
+スクリプトだけを手で使うこともできます（Node なら `python ...japango.py` を `node ...japango.mjs` に替えます）。
 
 ```
 python skills/japango/scripts/japango.py ids draft.md work
@@ -108,8 +116,10 @@ japango の物差しの調整に使っていない 3 本（社内報告・解説
 | `skills/japango/SKILL.md` | 工程と出すもの |
 | `skills/japango/references/finder.md` | 見つける役の指示 |
 | `skills/japango/references/rubric.md` | 型の一覧（どの文をどう直すかの物差し。ここ 1 か所だけ） |
-| `skills/japango/scripts/japango.py` | ids・merge・assemble（標準ライブラリだけ） |
+| `skills/japango/scripts/japango.py` | ids・merge・assemble（標準ライブラリだけ）。こちらが正本 |
+| `skills/japango/scripts/japango.mjs` | 同じものの Node.js 版。直すときは両方を直す |
 | `skills/japango/.codex-plugin/plugin.json` | Codex 用の設定 |
 | `.claude-plugin/` | Claude Code のプラグインの設定 |
 | `evals/` | 試験の素材 3 組と正解表、採点の手順 |
 | `tests/test_japango.py` | スクリプトのテスト（`python -m unittest discover -s tests`） |
+| `tests/test_parity.py`・`tests/parity/` | 試験で記録した原稿 10 本と指摘一覧を両方の版に通し、出力が一字一句同じかを確かめるテスト（Node が無ければ飛ばす） |

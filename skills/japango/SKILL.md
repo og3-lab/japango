@@ -10,9 +10,23 @@ metadata:
 
 AI が書いた日本語を、中身を変えずに直す手順です。規則（どの文をどう直すか）はこのファイルに書かず、`references/rubric.md`（型の一覧）と `references/finder.md`（見つける役の指示）に置いています。このファイルは工程と出すものだけを決めます。
 
-以下、`<skill>` はこのスキルのフォルダ（この SKILL.md があるフォルダ）、`<原稿>` は直す文章のファイルです。スクリプトは Python 3.8 以上の標準ライブラリだけで動きます。
+以下、`<skill>` はこのスキルのフォルダ（この SKILL.md があるフォルダ）、`<原稿>` は直す文章のファイルです。
 
-以下の `python` は、Python 3.8 以上を起動するコマンドです。`python --version` が通らなければ `py -3 --version`、`python3 --version` の順に試し、通ったものを使います。Windows で見つからないときは `%LOCALAPPDATA%\Programs\Python\Python3*\python.exe` も探します（ツールの作業環境から、利用者ごとに入れた Python が見えないことがある）。どれも無ければここで止め、Python の場所を利用者に聞きます。**スクリプトを別の言語で書き直したり、手作業で代わりをしたりしない**（足した事実の検査や組み立ての決まりが、書き直した側では保たれない）。
+## スクリプトの動かし方
+スクリプトは同じ中身のものが 2 つあります。`scripts/japango.py`（Python 3.8 以上）と `scripts/japango.mjs`（Node.js 18 以上）で、どちらも標準の機能だけで動き、同じ引数で同じファイルを書きます（テストで一字一句の一致を確かめている）。以下の `japango` は、次の順で最初に動いたものです。
+
+1. `python <skill>/scripts/japango.py`（`python` が通らなければ `py -3`、`python3` の順に試す。Windows で見つからなければ `%LOCALAPPDATA%\Programs\Python\Python3*\python.exe` も探す）
+2. Node.js: `node <skill>/scripts/japango.mjs`
+
+「動いた」は、`--version` が通るだけでなく、手順 1 の ids が実際に起動して結果を出したことを言います（ツールの作業環境によっては、Python が見えても起動を拒まれる）。Python が拒まれたら Node に切り替え、以降の手順も同じ方で通します。
+
+どちらも動かなければ、ここで止めて利用者に案内します。**自分で Python や Node を入れない**（PC の変更になる）。案内では、どちらか 1 つ入れればよいことと、次の入れ方を示します。
+- Windows: Node.js を勧める（`winget install OpenJS.NodeJS.LTS`、または nodejs.org のインストーラー）。利用者ごとに入れた Python は、ツールの作業環境から起動を拒まれることがあるため
+- Mac: `brew install node`、または nodejs.org のインストーラー
+- Linux: まず `python3 --version` を確かめる（多くは入っている）。無ければ OS のパッケージで python3 か nodejs を入れる
+- 入れた後は、Claude Code や Codex を開き直してから、もう一度頼んでもらう（開き直すまで新しいコマンドが見えないことがある）
+
+**スクリプトを別の言語で書き直したり、手作業で代わりをしたりしない**（足した事実の検査や組み立ての決まりが、書き直した側では保たれない）。
 
 ## 0. 原稿と作業フォルダを決める
 - ファイルを渡されたら、それが `<原稿>`。文章を貼られたら、作業フォルダに `input.md` として保存し、それを `<原稿>` にする
@@ -22,7 +36,7 @@ AI が書いた日本語を、中身を変えずに直す手順です。規則�
 ## 1. 文に ID を振る
 
 ```
-python <skill>/scripts/japango.py ids <原稿> <作業>
+japango ids <原稿> <作業>
 ```
 
 - `<作業>/<名前>.units.jsonl`（文の一覧）、`<名前>.annotated.txt`（`[p2-s3] 文` の形。見つける役が読む）、`<名前>.orig.md`（文の一覧から組み直した原文）ができる
@@ -47,7 +61,7 @@ route は delete（削る）／rewrite（言い換える。fix に完成した�
 ## 3. 指摘をまとめる
 
 ```
-python <skill>/scripts/japango.py merge <作業>/<名前>.units.jsonl <作業>/merged.jsonl <agree|union> <作業>/findings1.jsonl [<作業>/findings2.jsonl]
+japango merge <作業>/<名前>.units.jsonl <作業>/merged.jsonl <agree|union> <作業>/findings1.jsonl [<作業>/findings2.jsonl]
 ```
 
 - `agree`（②で使う）: 削る・言い換えるは、2 回ともその文を直すと言ったときだけ採る。どちらかが keep なら残す（keep の行として merged に残り、集計の `keep` に数えられる）。聞く（ask）は 2 回の和。1 回だけのとき（③）は、その 1 回の指摘がそのまま採られる
@@ -58,7 +72,7 @@ python <skill>/scripts/japango.py merge <作業>/<名前>.units.jsonl <作業>/m
 ## 4. 組み立てる
 
 ```
-python <skill>/scripts/japango.py assemble <作業>/<名前>.units.jsonl <作業>/merged.jsonl <作業>/log.json
+japango assemble <作業>/<名前>.units.jsonl <作業>/merged.jsonl <作業>/log.json
 ```
 
 - 直した本文は、スクリプトが `<原稿>` と同じフォルダの `<原稿の名前>.japango.md` に直接書く。同じ名前があれば `<原稿の名前>.japango-2.md` のように番号を付け、原稿そのものは書き換えない。書いた先は出力の `out` に出る（手で写さない）
@@ -78,7 +92,7 @@ python <skill>/scripts/japango.py assemble <作業>/<名前>.units.jsonl <作業
 2. 確認欄の問い（`〔確認n〕` とその問い）。書き手が答えれば、その事実を足して直せる
 3. 原文に戻した文（`log.json` の `reverted`）と、戻した理由の語
 4. 確認欄の末尾の「削った文が指していた語が残っていません」「1 文だけ残った段落」（`log.json` の `dangling` と `orphans`）。あれば、直すかどうかは利用者に任せる
-5. 変えた文の数と残した文の数（組み立ての出力の `changed` と `kept`。中身は `log.json` の `changes`）と、見つける役を何回走らせたか（2 回か 1 回か）
+5. 変えた文の数と残した文の数（組み立ての出力の `changed` と `kept`。中身は `log.json` の `changes`）と、見つける役を何回走らせたか（2 回か 1 回か）、スクリプトを Python と Node のどちらで動かしたか
 6. 0 で決めたジャンルと想定読者を推して決めたときは、そのこと
 
 「本文だけ」と頼まれても、確認欄と `log.json` はファイルに残す。
