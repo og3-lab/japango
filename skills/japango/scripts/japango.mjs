@@ -55,8 +55,11 @@ const stripChars = (s, c, left = true, right = true) => {
 };
 const findall = (re, s) => [...s.matchAll(re)].map((m) => (m.length > 1 ? m[1] : m[0]));
 
+// str.splitlines() boundaries; built from a string, since U+2028/2029 cannot sit in a regex literal
+const LINE_BREAK = new RegExp("\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]", "u");
+
 function splitlines(s) {
-  const out = s.split(new RegExp("\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]", "u"));
+  const out = s.split(LINE_BREAK);
   if (out.length && out[out.length - 1] === "") out.pop();
   return out;
 }
@@ -437,9 +440,10 @@ function cmdMerge(unitsPath, outPath, mode, findingPaths) {
 // ---------- assemble ----------
 
 // Cause, limit and time words, and numbers, in new that the whole original never had.
-function addedWords(nw, origDoc) {
-  const hits = ADDED_MARKERS.concat(TIME_MARKERS).filter((m) => nw.includes(m) && !origDoc.includes(m));
-  const origNums = new Set(findall(NUM, origDoc));
+const MARKERS = ADDED_MARKERS.concat(TIME_MARKERS);
+
+function addedWords(nw, origDoc, origNums) {
+  const hits = MARKERS.filter((m) => nw.includes(m) && !origDoc.includes(m));
   return hits.concat(findall(NUM, nw).filter((n) => !origNums.has(n)));
 }
 
@@ -447,6 +451,7 @@ function addedWords(nw, origDoc) {
 function assemble(us, merged) {
   const byId = new Map(us.map((u) => [u.id, u]));
   const origDoc = us.map((u) => u.text).join("");
+  const origNums = new Set(findall(NUM, origDoc));
   const before = new Map(us.map((u) => [u.id, u.text]));
   const changes = [], reverted = [], confirm = [], skipped = [];
   for (const f of merged) {
@@ -474,7 +479,7 @@ function assemble(us, merged) {
       confirm.push({ id: f.id, ask: f.fix });
     } else {
       nw = strip(f.fix || "");
-      const hits = addedWords(nw, origDoc);
+      const hits = addedWords(nw, origDoc, origNums);
       if (hits.length || !nw) {
         reverted.push({ id: f.id, proposed: nw, words: hits.length ? hits : ["空の言い換え"] });
         nw = strip(old);

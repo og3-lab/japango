@@ -381,10 +381,9 @@ def cmd_merge(units_path, out_path, mode, finding_paths):
 
 # ---------- assemble ----------
 
-def added_words(new, orig_doc):
+def added_words(new, orig_doc, orig_nums):
     """Cause, limit and time words, and numbers, in new that the whole original never had."""
     hits = [m for m in ADDED_MARKERS + TIME_MARKERS if m in new and m not in orig_doc]
-    orig_nums = set(NUM.findall(orig_doc))
     hits += [n for n in NUM.findall(new) if n not in orig_nums]
     return hits
 
@@ -393,6 +392,7 @@ def assemble(us, merged):
     """Returns (body, log). us is changed in place."""
     by_id = {u["id"]: u for u in us}
     orig_doc = "".join(u["text"] for u in us)
+    orig_nums = set(NUM.findall(orig_doc))
     before = {u["id"]: u["text"] for u in us}
     changes, reverted, confirm, skipped = [], [], [], []
     for f in merged:
@@ -419,7 +419,7 @@ def assemble(us, merged):
             confirm.append({"id": f["id"], "ask": f["fix"]})
         else:
             new = (f.get("fix") or "").strip()
-            hits = added_words(new, orig_doc)
+            hits = added_words(new, orig_doc, orig_nums)
             if hits or not new:
                 reverted.append({"id": f["id"], "proposed": new, "words": hits or ["空の言い換え"]})
                 new = old.strip()

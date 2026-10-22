@@ -9,28 +9,30 @@ import json
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from test_japango import ROOT, tmpdir
+
 SCRIPTS = ROOT / "skills" / "japango" / "scripts"
 CASES = ROOT / "tests" / "parity"
-WORK = ROOT / ".work"
 NODE = shutil.which("node")
 
 
-def run(lang, args):
+def run(lang, args, work=None):
+    """(exit code, what the command printed), with the work folder shown as <work>."""
     cmd = [sys.executable, str(SCRIPTS / "japango.py")] if lang == "py" else [NODE, str(SCRIPTS / "japango.mjs")]
     p = subprocess.run(cmd + [str(a) for a in args], capture_output=True)
-    return p.returncode, p.stdout.decode("utf-8").replace("\r\n", "\n")
+    printed = p.stdout.decode("utf-8").replace("\r\n", "\n")
+    if work is not None:
+        printed = printed.replace(json.dumps(str(work), ensure_ascii=False)[1:-1], "<work>")
+    return p.returncode, printed
 
 
 @unittest.skipUnless(NODE, "node is not installed")
 class Parity(unittest.TestCase):
     def setUp(self):
-        WORK.mkdir(exist_ok=True)
-        self.tmp = Path(tempfile.mkdtemp(dir=WORK))
+        self.tmp = tmpdir()
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -47,8 +49,7 @@ class Parity(unittest.TestCase):
         work = {lang: base / lang for lang in ("py", "js")}
         out = {}
         for lang, w in work.items():
-            code, printed = run(lang, ["ids", src, w])
-            out[lang] = [(code, printed.replace(json.dumps(str(w), ensure_ascii=False)[1:-1], "<work>"))]
+            out[lang] = [run(lang, ["ids", src, w], w)]
         self.assertEqual(out["py"], out["js"], f"{case.name}: ids output")
         for name in ("source.units.jsonl", "source.annotated.txt", "source.orig.md"):
             self.same(work["py"] / name, work["js"] / name, f"{case.name}: {name}")
@@ -57,10 +58,8 @@ class Parity(unittest.TestCase):
         for k, (mode, fs) in enumerate(plans):
             for lang, w in work.items():
                 merged, log, md = w / f"m{k}.jsonl", w / f"log{k}.json", w / f"out{k}.md"
-                code, printed = run(lang, ["merge", w / "source.units.jsonl", merged, mode, *fs])
-                out[lang].append((code, printed.replace(json.dumps(str(w), ensure_ascii=False)[1:-1], "<work>")))
-                code, printed = run(lang, ["assemble", w / "source.units.jsonl", merged, log, "--out", md])
-                out[lang].append((code, printed.replace(json.dumps(str(w), ensure_ascii=False)[1:-1], "<work>")))
+                out[lang].append(run(lang, ["merge", w / "source.units.jsonl", merged, mode, *fs], w))
+                out[lang].append(run(lang, ["assemble", w / "source.units.jsonl", merged, log, "--out", md], w))
             self.assertEqual(out["py"], out["js"], f"{case.name}: {mode} {len(fs)} run(s), printed")
             for name in (f"m{k}.jsonl", f"log{k}.json", f"out{k}.md"):
                 self.same(work["py"] / name, work["js"] / name, f"{case.name}: {mode} {len(fs)} run(s), {name}")
