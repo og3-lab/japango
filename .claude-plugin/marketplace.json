@@ -7,7 +7,7 @@
       "name": "japango",
       "source": "./",
       "description": "AI が書いた日本語を、中身を変えずに人が書いたように読める文へ直す",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": { "name": "og3-lab" },
       "license": "MIT"
     }
