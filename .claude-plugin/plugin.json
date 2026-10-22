@@ -1,0 +1,8 @@
+{
+  "name": "japango",
+  "description": "AI が書いた日本語を、中身を変えずに人が書いたように読める文へ直す（文に ID を振り、別の目の見つける役が指摘し、機械が組み立てて足した事実を戻す）",
+  "version": "0.1.0",
+  "skills": "./skills/",
+  "author": { "name": "og3-lab" },
+  "license": "MIT"
+}
