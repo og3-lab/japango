@@ -21,6 +21,12 @@ const FENCE = /^\s*(```|~~~)/u;
 
 const ROUTES = ["delete", "rewrite", "ask", "keep"];
 const EDIT_ROUTES = ["rewrite", "delete"];
+// types whose rewrite aligns a word with the rest of the text (呼び名・人の呼び名・動詞)
+const ALIGN_TYPES = /型\s*21[de]?(?![0-9a-z])/u;
+const ALIGN_ASK = (words) => `〔${words}のどれにそろえるか〕`;
+const ALIGN_ASK1 = (word) => `〔「${word}」とほかの回の言い方のどちらにそろえるか〕`;
+// a line that is only a URL: a mark after it would become part of the link
+const URL_LINE = /^<?https?:\/\/\S+>?$/u;
 
 // words that state a cause or a limit, and words that bound a time
 const ADDED_MARKERS = ["だけ", "のみ", "紛れ", "ため", "により", "によって", "原因", "せいで"];
@@ -399,7 +405,9 @@ function merge(us, runs, mode = "agree") {
       rows.push({ ...r, src: n });
     }
   });
-  const merged = mode === "agree" ? mergeFindingsAgree(rows, runs.length) : mergeFindings(rows);
+  const [aligned, w] = alignConflicts(rows);
+  warnings.push(...w);
+  const merged = mode === "agree" ? mergeFindingsAgree(aligned, runs.length) : mergeFindings(aligned);
   if (mode === "union" && runs.length > 1) {
     // a rewrite only one run proposed goes in, but the writer checks it: a single
     // run's rewrite is where new actions or events slipped in during tests
@@ -424,6 +432,61 @@ function merge(us, runs, mode = "agree") {
   const order = new Map(us.map((u, k) => [u.id, k]));
   all.sort((a, b) => order.get(a.id) - order.get(b.id));
   return [all, warnings];
+}
+
+// 質問する and 質問します, 聞く and 聞きます compare equal: drop the trailing kana.
+function alignKey(word) {
+  const w = String(word || "").replace(/[「」\s]/gu, "");
+  const stem = w.replace(/[ぁ-ゖ]+$/u, "");
+  return stem || w;
+}
+
+// Rewrites of one ID from different runs that align toward different words are
+// not an agreement: which word the writer meant is not in the text. A run's align
+// word must also be in every other run's rewrite of that ID (a run that rewrote
+// the sentence under another type still chose a word). On a conflict the rewrites
+// are dropped and the ID gets an ask naming the words (other questions stay).
+function alignConflicts(rows) {
+  const warnings = [], rewrites = new Map(), words = new Map();
+  for (const r of rows) {
+    if (r.route !== "rewrite") continue;
+    if (!rewrites.has(r.id)) rewrites.set(r.id, []);
+    rewrites.get(r.id).push(r);
+    if (!ALIGN_TYPES.test(r.pattern || "")) continue;
+    const w = strip(String(r.align || "").replace(/[「」]/gu, ""));
+    if (!w) {
+      warnings.push(`run ${r.src + 1}: ${r.id} aligns a word but has no align`);
+      continue;
+    }
+    if (!words.has(r.id)) words.set(r.id, []);
+    const ws = words.get(r.id);
+    if (!ws.map(alignKey).includes(alignKey(w))) ws.push(w);
+  }
+  const conflicts = new Map();
+  for (const [i, ws] of words) {
+    const rs = rewrites.get(i);
+    if (new Set(rs.map((r) => r.src)).size < 2) continue;
+    const missing = ws.some((w) => rs.some((r) => !(r.fix || "").includes(alignKey(w))));
+    if (ws.length > 1 || missing) {
+      conflicts.set(i, ws);
+      warnings.push(`align conflict ${i}: ${ws.join(" / ")} -> ask`);
+    }
+  }
+  if (!conflicts.size) return [rows, warnings];
+  const out = [], asked = new Set();
+  for (const r of rows) {
+    if (conflicts.has(r.id) && r.route === "rewrite") {
+      if (!asked.has(r.id)) {
+        asked.add(r.id);
+        const ws = conflicts.get(r.id);
+        const q = ws.length > 1 ? ALIGN_ASK(ws.map((w) => `「${w}」`).join("・")) : ALIGN_ASK1(ws[0]);
+        out.push({ id: r.id, route: "ask", fix: q, src: r.src });
+      }
+      continue;
+    }
+    out.push(r);
+  }
+  return [out, warnings];
 }
 
 function cmdMerge(unitsPath, outPath, mode, findingPaths) {
@@ -500,20 +563,32 @@ function assemble(us, merged) {
   const order = new Map(us.map((u, k) => [u.id, k]));
   const markable = (x) => {
     const t = strip(x.text);
-    return Boolean(t) && !x.raw && !t.startsWith("#");
+    return Boolean(t) && !x.raw && !t.startsWith("#") && !URL_LINE.test(t);
   };
   const anchor = (i) => {
-    // a question about a heading goes on the first sentence under it, not on the
-    // end of the section before
+    // a question about a heading goes on the first sentence of its own section;
+    // when the next heading comes first, on the heading itself. Never on the
+    // section before or after
     const k = order.get(i);
     if (strip(us[k].text).startsWith("#")) {
-      const nxt = us.slice(k + 1).find(markable);
-      if (nxt) return nxt.id;
+      for (const x of us.slice(k + 1)) {
+        if (strip(x.text).startsWith("#")) break;
+        if (markable(x)) return x.id;
+      }
+      return i;
     }
     for (let j = k; j >= 0; j--) if (markable(us[j])) return us[j].id;
     return us.slice(k).find(markable)?.id ?? i;
   };
-  for (const c of confirm) c.at = anchor(c.id);
+  for (const c of confirm) {
+    c.at = anchor(c.id);
+    // the list names the heading, since its mark may sit on the sentence under it
+    const h = strip(byId.get(c.id).text);
+    if (h.startsWith("#")) {
+      const cs = [...h.replace(/^#+\s*/u, "")];
+      c.heading = cs.slice(0, 20).join("") + (cs.length > 20 ? "…" : "");
+    }
+  }
   confirm.sort((a, b) => order.get(a.at) - order.get(b.at) || order.get(a.id) - order.get(b.id));
   // a question already listed is not listed again; a finding whose questions
   // were all listed before gets no mark of its own
@@ -610,8 +685,9 @@ const orphanLine = (o) => `- 1 文だけ残った段落: 〔${o.text}〕（${o.i
 // One question on the same line as its mark; several, one per line under it.
 function confirmLines(c) {
   const qs = c.questions;
-  if (qs.length === 1) return `- 〔確認${c.no}〕${qs[0]}\n`;
-  return `- 〔確認${c.no}〕\n` + qs.map((q) => `  - ${q}\n`).join("");
+  const head = c.heading ? `（見出し「${c.heading}」）` : "";
+  if (qs.length === 1) return `- 〔確認${c.no}〕${head}${qs[0]}\n`;
+  return `- 〔確認${c.no}〕${head}\n` + qs.map((q) => `  - ${q}\n`).join("");
 }
 
 // <stem>.japango.md next to source, numbered when the name is taken.

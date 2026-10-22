@@ -132,6 +132,79 @@ class Merge(unittest.TestCase):
         self.assertIn("見出しの下の文。〔確認1〕", body)
         self.assertNotIn("前の節の文。〔確認1〕", body)
 
+    def test_heading_ask_stays_in_its_section(self):
+        # the next unit is another heading, then a bare URL: the mark goes on the
+        # heading itself, not after the URL of the next section
+        us = [{"id": "p1-s1", "text": "# 題", "para": 1},
+              {"id": "p2-s1", "text": "## 動画", "para": 2},
+              {"id": "p3-s1", "text": "https://example.com/v", "para": 3},
+              {"id": "p4-s1", "text": "本文の文。", "para": 4}]
+        a = [{"id": "p1-s1", "route": "ask", "fix": "〔どのように作ったか〕"}]
+        merged, _ = jp.merge(us, [a, a], "agree")
+        body, log = jp.assemble([dict(u) for u in us], merged)
+        self.assertIn("# 題〔確認1〕", body)
+        self.assertIn("https://example.com/v\n", body)
+        self.assertNotIn("本文の文。〔確認1〕", body)
+        self.assertIn("- 〔確認1〕（見出し「題」）どのように作ったか", body)
+        self.assertEqual(log["confirm"][0]["at"], "p1-s1")
+
+    def test_heading_ask_with_sentence_names_the_heading(self):
+        us = [{"id": "p1-s1", "text": "## 見出し", "para": 1},
+              {"id": "p2-s1", "text": "見出しの下の文。", "para": 2}]
+        a = [{"id": "p1-s1", "route": "ask", "fix": "〔何を指すか〕"}]
+        merged, _ = jp.merge(us, [a, a], "agree")
+        body, _ = jp.assemble([dict(u) for u in us], merged)
+        self.assertIn("見出しの下の文。〔確認1〕", body)
+        self.assertIn("- 〔確認1〕（見出し「見出し」）何を指すか", body)
+
+    def test_align_conflict_becomes_ask(self):
+        # both runs rewrite, but toward different words: not an agreement
+        a = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21e 同じ動作を別の動詞で呼ぶ",
+              "align": "質問する", "fix": "あなたに質問します。"}]
+        b = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21e", "align": "聞く",
+              "fix": "あなたに聞きます。"}]
+        for mode in ("agree", "union"):
+            merged, warnings = jp.merge(self.us, [a, b], mode)
+            row = next(r for r in merged if r["id"] == "p1-s2")
+            self.assertEqual(row["route"], "ask", mode)
+            self.assertEqual(row["fix"], "〔「質問する」・「聞く」のどれにそろえるか〕")
+            self.assertTrue(any("align conflict p1-s2" in w for w in warnings))
+        body, _ = jp.assemble([dict(u) for u in self.us], merged)
+        self.assertNotIn("あなたに", body)
+        self.assertIn("〔確認1〕", body)
+
+    def test_align_same_word_in_other_form_agrees(self):
+        a = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21d", "align": "質問する",
+              "fix": "担当者に質問します。"}]
+        b = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21d", "align": "「質問します」",
+              "fix": "担当者へ質問します。"}]
+        merged, warnings = jp.merge(self.us, [a, b], "agree")
+        self.assertEqual(merged[0]["route"], "rewrite")
+        self.assertEqual(merged[0]["fix"], "担当者に質問します。")
+        self.assertEqual(warnings, [])
+
+    def test_align_word_missing_from_other_run_is_a_conflict(self):
+        # run 2 rewrote the same sentence under another type and chose 聞く: the
+        # agreement on rewrite is not an agreement on the word
+        a = [{"id": "p1-s2", "route": "rewrite", "pattern": "型32／型21e", "align": "質問する",
+              "fix": "あなたに質問する、を決めます。"}]
+        b = [{"id": "p1-s2", "route": "rewrite", "pattern": "型32 原稿の中の食い違い",
+              "fix": "あなたに聞く、を決めます。"}]
+        merged, _ = jp.merge(self.us, [a, b], "agree")
+        row = next(r for r in merged if r["id"] == "p1-s2")
+        self.assertEqual(row["route"], "ask")
+        self.assertEqual(row["fix"], "〔「質問する」とほかの回の言い方のどちらにそろえるか〕")
+
+    def test_align_only_for_types_21(self):
+        # other types and 21b/21c never compare align; a missing align is reported
+        a = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21c", "align": "x", "fix": "一。"},
+             {"id": "p1-s3", "route": "rewrite", "pattern": "型21e", "fix": "二。"}]
+        b = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21c", "align": "y", "fix": "一。"},
+             {"id": "p1-s3", "route": "rewrite", "pattern": "型21e", "fix": "二。"}]
+        merged, warnings = jp.merge(self.us, [a, b], "agree")
+        self.assertEqual([r["route"] for r in merged], ["rewrite", "rewrite"])
+        self.assertEqual(len([w for w in warnings if "has no align" in w]), 2)
+
     def test_keep_wins_and_asks_are_union(self):
         a = [{"id": "p1-s1", "route": "delete"}, {"id": "p1-s3", "route": "ask", "fix": "〔誰が決めたか〕"}]
         b = [{"id": "p1-s1", "route": "keep"}]

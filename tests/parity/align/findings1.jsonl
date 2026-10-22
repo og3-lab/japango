@@ -1,0 +1,5 @@
+{"id": "p1-s1", "pattern": "型33 題と本文が合っていない", "quote": "AI に任せる", "effect": "x", "route": "ask", "fix": "〔AI に何を任せるか〕"}
+{"id": "p4-s1", "pattern": "型21e 同じ動作を別の動詞で呼ぶ", "quote": "さらいます", "effect": "x", "route": "rewrite", "align": "読み返す", "fix": "担当者は、配る前に下書きを読み返します。"}
+{"id": "p4-s2", "pattern": "型21d 人の呼び名の揺れ", "quote": "あなたが", "effect": "x", "route": "rewrite", "align": "担当者", "fix": "数字が合わないときは、担当者が出席者に確かめてください。"}
+{"id": "p4-s3", "pattern": "型21e 同じ動作を別の動詞で呼ぶ", "quote": "質問します", "effect": "x", "route": "rewrite", "align": "質問する", "fix": "根拠の無い文は、確認欄で質問します。"}
+{"id": "p5-s1", "pattern": "型21c 指す中身を言わない見出し", "quote": "読み返す", "effect": "x", "route": "ask", "fix": "〔何を読み返すか〕"}

@@ -16,6 +16,10 @@ Standard library only (Python 3.8+).
       are always the union, and a keep from any run is kept as a keep row. One
       finding may carry several questions as 〔問い1〕〔問い2〕. Also adds a mechanical finding for bold that wraps
       a whole sentence or appears twice in one sentence.
+      A rewrite for types 21, 21d and 21e names the word it aligns to in "align".
+      When runs rewrite one ID toward different words, neither rewrite is used:
+      the ID becomes an ask that names the words, since which one the writer
+      meant is not in the text.
 
   assemble UNITS MERGED LOG_JSON [--out OUT_MD]
       Write the revised text to <source stem>.japango.md next to the source
@@ -46,6 +50,12 @@ BLOCK_START = re.compile(r"(#{1,6} |[-*+] |\d+[.)] |> )")
 FENCE = re.compile(r"\s*(```|~~~)")
 
 ROUTES = ("delete", "rewrite", "ask", "keep")
+# types whose rewrite aligns a word with the rest of the text (呼び名・人の呼び名・動詞)
+ALIGN_TYPES = re.compile(r"型\s*21[de]?(?![0-9a-z])")
+ALIGN_ASK = "〔{words}のどれにそろえるか〕"
+ALIGN_ASK1 = "〔「{word}」とほかの回の言い方のどちらにそろえるか〕"
+# a line that is only a URL: a mark after it would become part of the link
+URL_LINE = re.compile(r"<?https?://\S+>?")
 EDIT_ROUTES = ("rewrite", "delete")
 
 # words that state a cause or a limit, and words that bound a time
@@ -346,6 +356,8 @@ def merge(us, runs, mode="agree"):
                 if not r["fix"]:
                     continue
             rows.append(dict(r, src=n))
+    rows, w = align_conflicts(rows)
+    warnings += w
     merged = merge_findings_agree(rows, len(runs)) if mode == "agree" else merge_findings(rows)
     if mode == "union" and len(runs) > 1:
         # a rewrite only one run proposed goes in, but the writer checks it: a single
@@ -365,6 +377,58 @@ def merge(us, runs, mode="agree"):
     order = {u["id"]: k for k, u in enumerate(us)}
     merged.sort(key=lambda r: order[r["id"]])
     return merged, warnings
+
+
+def align_key(word):
+    """質問する and 質問します, 聞く and 聞きます compare equal: drop the trailing kana."""
+    w = re.sub(r"[「」\s]", "", word or "")
+    stem = re.sub(r"[ぁ-ゖ]+$", "", w)
+    return stem or w
+
+
+def align_conflicts(rows):
+    """Rewrites of one ID from different runs that align toward different words are
+    not an agreement: which word the writer meant is not in the text. A run's align
+    word must also be in every other run's rewrite of that ID (a run that rewrote
+    the sentence under another type still chose a word). On a conflict the rewrites
+    are dropped and the ID gets an ask naming the words (other questions stay)."""
+    warnings, rewrites, words = [], {}, {}
+    for r in rows:
+        if r["route"] != "rewrite":
+            continue
+        rewrites.setdefault(r["id"], []).append(r)
+        if not ALIGN_TYPES.search(r.get("pattern") or ""):
+            continue
+        w = re.sub(r"[「」]", "", str(r.get("align") or "")).strip()
+        if not w:
+            warnings.append(f"run {r['src'] + 1}: {r['id']} aligns a word but has no align")
+            continue
+        ws = words.setdefault(r["id"], [])
+        if align_key(w) not in [align_key(x) for x in ws]:
+            ws.append(w)
+    conflicts = {}
+    for i, ws in words.items():
+        rs = rewrites[i]
+        if len({r["src"] for r in rs}) < 2:
+            continue
+        missing = any(align_key(w) not in (r.get("fix") or "") for w in ws for r in rs)
+        if len(ws) > 1 or missing:
+            conflicts[i] = ws
+            warnings.append(f"align conflict {i}: {' / '.join(ws)} -> ask")
+    if not conflicts:
+        return rows, warnings
+    out, asked = [], set()
+    for r in rows:
+        if r["id"] in conflicts and r["route"] == "rewrite":
+            if r["id"] not in asked:
+                asked.add(r["id"])
+                ws = conflicts[r["id"]]
+                q = (ALIGN_ASK.format(words="・".join(f"「{w}」" for w in ws)) if len(ws) > 1
+                     else ALIGN_ASK1.format(word=ws[0]))
+                out.append({"id": r["id"], "route": "ask", "fix": q, "src": r["src"]})
+            continue
+        out.append(r)
+    return out, warnings
 
 
 def cmd_merge(units_path, out_path, mode, finding_paths):
@@ -441,15 +505,19 @@ def assemble(us, merged):
 
     def markable(x):
         t = x["text"].strip()
-        return t and not x.get("raw") and not t.startswith("#")
+        return t and not x.get("raw") and not t.startswith("#") and not URL_LINE.fullmatch(t)
 
     def anchor(i):
-        # a question about a heading goes on the first sentence under it, not on the
-        # end of the section before
+        # a question about a heading goes on the first sentence of its own section;
+        # when the next heading comes first, on the heading itself. Never on the
+        # section before or after
         if us[order[i]]["text"].strip().startswith("#"):
-            nxt = next((x["id"] for x in us[order[i] + 1:] if markable(x)), None)
-            if nxt:
-                return nxt
+            for x in us[order[i] + 1:]:
+                if x["text"].strip().startswith("#"):
+                    break
+                if markable(x):
+                    return x["id"]
+            return i
         for j in range(order[i], -1, -1):
             if markable(us[j]):
                 return us[j]["id"]
@@ -457,6 +525,11 @@ def assemble(us, merged):
 
     for c in confirm:
         c["at"] = anchor(c["id"])
+        # the list names the heading, since its mark may sit on the sentence under it
+        h = by_id[c["id"]]["text"].strip()
+        if h.startswith("#"):
+            h = re.sub(r"^#+\s*", "", h)
+            c["heading"] = h[:20] + ("…" if len(h) > 20 else "")
     confirm.sort(key=lambda c: (order[c["at"]], order[c["id"]]))
     # a question already listed is not listed again; a finding whose questions
     # were all listed before gets no mark of its own
@@ -561,9 +634,10 @@ def orphan_line(o):
 def confirm_lines(c):
     """One question on the same line as its mark; several, one per line under it."""
     qs = c["questions"]
+    head = f"（見出し「{c['heading']}」）" if c.get("heading") else ""
     if len(qs) == 1:
-        return f"- 〔確認{c['no']}〕{qs[0]}\n"
-    return f"- 〔確認{c['no']}〕\n" + "".join(f"  - {q}\n" for q in qs)
+        return f"- 〔確認{c['no']}〕{head}{qs[0]}\n"
+    return f"- 〔確認{c['no']}〕{head}\n" + "".join(f"  - {q}\n" for q in qs)
 
 
 def output_path(source):
