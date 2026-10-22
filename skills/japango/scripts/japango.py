@@ -356,7 +356,7 @@ def merge(us, runs, mode="agree"):
                 editors.setdefault(r["id"], set()).add(r["src"])
         for m in merged:
             if m["route"] == "rewrite" and len(editors.get(m["id"], ())) == 1:
-                head = (m.get("fix") or "").strip()
+                head = re.sub(r"^(#+|[-*+]|\d+[.)])\s+", "", (m.get("fix") or "").strip())
                 head = head[:15] + ("…" if len(head) > 15 else "")
                 m["ask"] = (m.get("ask") or "") + SINGLE_REWRITE_ASK.format(head=head)
     # the bold check only speaks for sentences no finder run mentioned
@@ -444,6 +444,12 @@ def assemble(us, merged):
         return t and not x.get("raw") and not t.startswith("#")
 
     def anchor(i):
+        # a question about a heading goes on the first sentence under it, not on the
+        # end of the section before
+        if us[order[i]]["text"].strip().startswith("#"):
+            nxt = next((x["id"] for x in us[order[i] + 1:] if markable(x)), None)
+            if nxt:
+                return nxt
         for j in range(order[i], -1, -1):
             if markable(us[j]):
                 return us[j]["id"]

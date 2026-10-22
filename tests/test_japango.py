@@ -121,6 +121,17 @@ class Merge(unittest.TestCase):
         merged, _ = jp.merge(self.us, [a, b], "agree")
         self.assertTrue(all(not r.get("ask") for r in merged))
 
+    def test_single_rewrite_of_heading_marks_next_sentence(self):
+        us = [{"id": "p1-s1", "text": "前の節の文。", "para": 1},
+              {"id": "p2-s1", "text": "## 見出し", "para": 2},
+              {"id": "p3-s1", "text": "見出しの下の文。", "para": 3}]
+        a = [{"id": "p2-s1", "route": "rewrite", "fix": "## 新しい見出し"}]
+        merged, _ = jp.merge(us, [a, []], "union")
+        self.assertNotIn("#", merged[0]["ask"])
+        body, _ = jp.assemble([dict(u) for u in us], merged)
+        self.assertIn("見出しの下の文。〔確認1〕", body)
+        self.assertNotIn("前の節の文。〔確認1〕", body)
+
     def test_keep_wins_and_asks_are_union(self):
         a = [{"id": "p1-s1", "route": "delete"}, {"id": "p1-s3", "route": "ask", "fix": "〔誰が決めたか〕"}]
         b = [{"id": "p1-s1", "route": "keep"}]
