@@ -633,5 +633,74 @@ class SecondRound(unittest.TestCase):
             self.assertEqual(body, self.first(), fix)
 
 
+class Effect(unittest.TestCase):
+    """The confirmation list says what the reader is stuck on, after the question."""
+    TEXT = "原稿 3 本でおよそ 10 万トークンかかります。窓口は朝九時に開きます。\n"
+    ASK = {"id": "p1-s1", "route": "ask", "fix": "〔10 万トークンは 3 本の合計か〕",
+           "effect": "自分の原稿でどれだけかかるか見積もれない。"}
+
+    def run_merge(self, runs, mode="agree"):
+        merged, _ = jp.merge(jp.units(self.TEXT), runs, mode)
+        body, log = jp.assemble(jp.units(self.TEXT), merged)
+        return merged, body.split("## 確認欄\n\n")[1]
+
+    def test_question_then_effect(self):
+        merged, box = self.run_merge([[self.ASK], [dict(self.ASK, effect="見積もれない")]])
+        self.assertEqual(merged[0]["effect"], "自分の原稿でどれだけかかるか見積もれない")
+        self.assertEqual(box, "- 〔確認1〕10 万トークンは 3 本の合計か（読者が困ること: 自分の原稿でどれだけかかるか見積もれない）\n")
+
+    def test_no_effect_for_merge_own_question(self):
+        rw = {"id": "p1-s1", "route": "rewrite", "fix": "原稿 3 本の合計で、およそ 10 万トークンかかります。",
+              "effect": "書き直しの理由"}
+        merged, box = self.run_merge([[rw, self.ASK], []], "union")
+        self.assertEqual(merged[0]["effect"], "自分の原稿でどれだけかかるか見積もれない")
+        lines = box.splitlines()
+        self.assertTrue(lines[1].endswith("合計か（読者が困ること: 自分の原稿でどれだけかかるか見積もれない）"))
+        self.assertTrue(lines[2].endswith("増えていないか"))
+        # a rewrite alone: only the question merge adds, so no effect
+        merged, box = self.run_merge([[rw], []], "union")
+        self.assertNotIn("effect", merged[0])
+        self.assertNotIn("読者が困ること", box)
+
+    def test_finding_without_effect_is_as_before(self):
+        ask = {k: v for k, v in self.ASK.items() if k != "effect"}
+        merged, box = self.run_merge([[ask]])
+        self.assertNotIn("effect", merged[0])
+        self.assertEqual(box, "- 〔確認1〕10 万トークンは 3 本の合計か\n")
+
+
+class Extract(unittest.TestCase):
+    PAGE = """<!doctype html><html><head><title>t</title><style>p{color:red}</style></head><body>
+<header><h1>見出し<br>二行目</h1><script>var a = "<p>x</p>";</script></header>
+<p>本文の文です。<code>npm i</code> を打ちます。</p>
+<div class="btns"><a class="btn b1" href="/a.zip" download>zip をダウンロード</a>
+<a href="/x">ふつうのリンク</a></div>
+<div class="ask"><code>/plugin install a@b</code><button type="button">コピー</button></div>
+<ul><li>一つ目</li><li>二つ<b>目</b></li></ul>
+<dl><dt>見出し語</dt><dd>説明&amp;続き&#x3002;</dd></dl>
+<img src="a.png" alt="図 1"><svg><text>捨てる</text></svg>
+<pre>line 1
+
+line 2</pre>
+</body></html>"""
+
+    def test_extract(self):
+        md, counts = jp.extract(self.PAGE)
+        self.assertEqual(md, "# 見出し二行目\n\n本文の文です。`npm i` を打ちます。\n\n"
+                             "〔ボタン: zip をダウンロード → /a.zip〕\n\nふつうのリンク\n\n"
+                             "〔コード: /plugin install a@b〕\n〔ボタン: コピー〕\n\n- 一つ目\n- 二つ目\n\n"
+                             "見出し語\n\n説明&続き。\n\n〔画像: 図 1〕\n\n〔コード: line 1\nline 2〕\n")
+        self.assertEqual((counts["ボタン"], counts["コード"], counts["画像"]), (2, 2, 1))
+
+    def test_marks_are_kept_as_is(self):
+        md, _ = jp.extract(self.PAGE)
+        us = jp.units(md)
+        self.assertEqual(jp.render(us), md)
+        marks = [u for u in us if "〔" in u["text"]]
+        self.assertTrue(marks and all(u.get("raw") for u in marks))
+        body, _ = jp.assemble(jp.units(md), [])
+        self.assertEqual(body, md)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@
 //   ids SRC WORKDIR
 //   merge UNITS OUT MODE FINDINGS [FINDINGS ...]
 //   assemble UNITS MERGED LOG_JSON [--out OUT_MD]
+//   extract SRC -o OUT
 //
 // See japango.py for what each command does.
 import fs from "node:fs";
@@ -31,6 +32,8 @@ const URL_LINE = /^<?https?:\/\/\S+>?$/u;
 // words that state a cause or a limit, and words that bound a time
 const ADDED_MARKERS = ["だけ", "のみ", "紛れ", "ため", "により", "によって", "原因", "せいで"];
 const SINGLE_REWRITE_ASK = (head) => `〔「${head}」の書き直しで、原文に無い行動・出来事が増えていないか〕`;
+// the questions merge adds by itself; see AUTO_ASK in japango.py
+const AUTO_ASK = /^(?:「.*」の書き直しで、原文に無い行動・出来事が増えていないか|(?:「[^」]*」・)+「[^」]*」のどれにそろえるか|「[^」]*」とほかの回の言い方のどちらにそろえるか)$/u;
 const TIME_MARKERS = ["まで", "以降", "以前", "までに"];
 const NUM = /\p{Nd}+(?:\.\p{Nd}+)?/gu;
 const BOLD = /\*\*(.+?)\*\*/gu;
@@ -54,6 +57,8 @@ const MARK_NO = /〔確認([0-9]+)〕/gu;
 const LEAD_MARKS = /^(?:〔確認[0-9]+〕)+/u;
 const CONFIRM_HEAD = "---\n\n## 確認欄\n\n";
 const CONFIRM_ITEM = /^(?:- 〔確認[0-9]+〕|  - |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: |- 言い直しとして削った文にしか無い語: )/u;
+// the lines extract writes for a button, code and a picture
+const MARK_LINE = /^〔(?:ボタン|コード|画像): /u;
 // a deletion as a restatement (型 6); see RESTATE in japango.py
 const RESTATE = /^\s*型\s*6(?![0-9a-z])/u;
 const unmark = (s) => s.replace(MARK, "");
@@ -202,9 +207,9 @@ function blocksOf(body) {
   return out;
 }
 
-// Tables and HTML are not split; the finder does not see them.
+// Tables, HTML and the 〔ボタン: …〕 lines extract writes are not split; the finder does not see them.
 function isRaw(lines) {
-  return lines.every((l) => lstrip(l).startsWith("|")) || lstrip(lines[0]).startsWith("<");
+  return lines.every((l) => lstrip(l).startsWith("|")) || lstrip(lines[0]).startsWith("<") || MARK_LINE.test(lstrip(lines[0]));
 }
 
 const count = (s, sub) => s.split(sub).length - 1;
@@ -356,7 +361,8 @@ function mergeFindings(rows) {
     const routes = new Set(rs.map((r) => r.route));
     const askRows = rs.filter((r) => r.route === "ask" && r.fix);
     const firstSrc = askRows.length ? Math.min(...askRows.map((r) => get(r, "src", 0))) : null;
-    const asks = askRows.filter((r) => get(r, "src", 0) === firstSrc).map((r) => r.fix).join("");
+    const asking = askRows.filter((r) => get(r, "src", 0) === firstSrc);
+    const asks = asking.map((r) => r.fix).join("");
     if (routes.has("keep") && asks) {
       merged.push({ id: i, route: "ask", fix: asks });
     } else if (routes.has("keep")) {
@@ -371,8 +377,21 @@ function mergeFindings(rows) {
     } else {
       merged.push({ id: i, route: "ask", fix: asks });
     }
+    // what the reader is stuck on, from the findings that asked
+    const effect = effectsOf(asking);
+    if (asks && effect && merged.at(-1).route !== "keep") merged.at(-1).effect = effect;
   }
   return merged;
+}
+
+// The "effect" of each row, without a closing 。 and without repeats, joined by ／.
+function effectsOf(rows) {
+  const out = [];
+  for (const r of rows) {
+    const e = typeof r.effect === "string" ? strip(stripChars(strip(r.effect), "。", false, true)) : "";
+    if (e && !out.includes(e)) out.push(e);
+  }
+  return out.join("／");
 }
 
 // Edits only where every run proposed an edit for the ID; questions are the union.
@@ -516,6 +535,7 @@ function merge(us, runs, mode = "agree") {
     const asks = head && head.route === "ask" ? head.fix : "";
     if (head) merged.splice(k, 1);
     merged.push({ id: a.id, route: "rewrite", fix: get(a, "fix", ""), ask: asks, pattern: get(a, "pattern", ""), join: a.join });
+    if (asks && head.effect) merged.at(-1).effect = head.effect;
   }
   if (mode === "union" && runs.length > 1) {
     // a rewrite only one run proposed goes in, but the writer checks it: a single
@@ -658,10 +678,10 @@ function assemble(us, merged) {
     let nw;
     if (f.route === "delete") {
       nw = "";
-      if (f.ask) confirm.push({ id: f.id, ask: f.ask });
+      if (f.ask) confirm.push(asked(f, f.ask));
     } else if (f.route === "ask") {
       nw = strip(old);
-      confirm.push({ id: f.id, ask: f.fix });
+      confirm.push(asked(f, f.fix));
     } else {
       nw = strip(f.fix || "");
       const bare = unmark(nw);
@@ -672,7 +692,7 @@ function assemble(us, merged) {
         nw = strip(old);
         span = null;
       }
-      if (f.ask) confirm.push({ id: f.id, ask: f.ask });
+      if (f.ask) confirm.push(asked(f, f.ask));
     }
     if (nw && prefix && !nw.startsWith(strip(prefix))) nw = prefix + nw;
     if (f.route === "rewrite") nw = keepMarks((span || [f.id]).map((j) => byId.get(j).text), nw);
@@ -854,9 +874,19 @@ function orphanParagraphs(us, before, joined = new Set()) {
 
 const orphanLine = (o) => `- 1 文だけ残った段落: 〔${o.text}〕（${o.id}）\n`;
 
-// One question on the same line as its mark; several, one per line under it.
+// A confirmation entry: the questions, and what the reader is stuck on when the finding said so.
+function asked(f, ask) {
+  const c = { id: f.id, ask };
+  if (typeof f.effect === "string" && f.effect) c.effect = f.effect;
+  return c;
+}
+
+// One question on the same line as its mark; several, one per line under it. What
+// the reader is stuck on follows the finding's last question (not one merge added).
 function confirmLines(c) {
-  const qs = c.questions;
+  const qs = [...c.questions];
+  const own = qs.map((q, k) => (AUTO_ASK.test(q) ? -1 : k)).filter((k) => k >= 0);
+  if (c.effect && own.length) qs[own.at(-1)] += `（読者が困ること: ${c.effect}）`;
   const head = c.heading ? `（見出し「${c.heading}」）` : "";
   if (qs.length === 1) return `- 〔確認${c.no}〕${head}${qs[0]}\n`;
   return `- 〔確認${c.no}〕${head}\n` + qs.map((q) => `  - ${q}\n`).join("");
@@ -895,18 +925,249 @@ function cmdAssemble(unitsPath, mergedPath, logPath, outPath = null) {
   return 0;
 }
 
+// ---------- extract ----------
+
+// a hand-written reader, the same as japango.py's (white space is HTML's, the ASCII five)
+const TAG = new RegExp("<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[ \\t\\n\\r\\f]+[^ \\t\\n\\r\\f\"'>/=]+(?:[ \\t\\n\\r\\f]*=[ \\t\\n\\r\\f]*" +
+  "(?:\"[^\"]*\"|'[^']*'|[^ \\t\\n\\r\\f\"'>]+))?)*)[ \\t\\n\\r\\f]*(/?)[ \\t\\n\\r\\f]*>", "uy");
+const ATTR = new RegExp("([^ \\t\\n\\r\\f\"'>/=]+)(?:[ \\t\\n\\r\\f]*=[ \\t\\n\\r\\f]*(?:\"([^\"]*)\"|'([^']*)'|([^ \\t\\n\\r\\f\"'>]+)))?", "gu");
+const ENTITY = /&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z]+);/gu;
+const ENTITIES = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", copy: "©",
+  hellip: "…", mdash: "—", ndash: "–", laquo: "«", raquo: "»", times: "×",
+  yen: "¥", middot: "·", rarr: "→", larr: "←",
+};
+// only ASCII white space folds; a full-width space is part of the text
+const HTML_WS = /[ \t\n\r\f]+/gu;
+const HTML_WS1 = /[ \t\n\r\f]+/u;
+// elements whose content is not text to read
+const SKIP_TAGS = new Set(["head", "script", "style", "svg", "template", "noscript", "iframe", "canvas", "object", "select"]);
+const BLOCK_TAGS = new Set(["address", "article", "aside", "blockquote", "body", "caption", "dd", "details", "dialog", "div",
+  "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
+  "h6", "header", "hr", "html", "li", "main", "nav", "ol", "p", "section", "summary",
+  "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"]);
+const HEADING = /^h[1-6]$/u;
+// a line break between two Japanese characters, which a page wraps without a space
+const CJK = "\\u3000-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff\\uff00-\\uffef";
+const CJK_BREAK = new RegExp(`(?<=[${CJK}])[ \\t\\r\\f]*\\n[ \\t\\n\\r\\f]*(?=[${CJK}])`, "gu");
+
+function unescape(t) {
+  return t.replace(ENTITY, (m, e) => {
+    if (e[0] === "#") {
+      const n = "xX".includes(e[1]) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return n > 0 && n < 0x110000 && !(n >= 0xd800 && n < 0xe000) ? String.fromCodePoint(n) : m;
+    }
+    return Object.hasOwn(ENTITIES, e) ? ENTITIES[e] : m;
+  });
+}
+
+const asciiLower = (t) => t.replace(/[A-Z]/gu, (c) => c.toLowerCase());
+
+// ["text", s], ["open", name, attrs, selfClosing] and ["close", name]; see html_tokens in japango.py.
+function htmlTokens(html) {
+  const out = [], n = html.length;
+  let k = 0;
+  while (k < n) {
+    const lt = html.indexOf("<", k);
+    if (lt === -1) {
+      out.push(["text", html.slice(k)]);
+      break;
+    }
+    if (lt > k) out.push(["text", html.slice(k, lt)]);
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      k = end === -1 ? n : end + 3;
+      continue;
+    }
+    if (html.startsWith("<!", lt) || html.startsWith("<?", lt)) {
+      const end = html.indexOf(">", lt);
+      k = end === -1 ? n : end + 1;
+      continue;
+    }
+    TAG.lastIndex = lt;
+    const m = TAG.exec(html);
+    if (!m) {
+      out.push(["text", "<"]);
+      k = lt + 1;
+      continue;
+    }
+    const name = asciiLower(m[2]);
+    k = lt + m[0].length;
+    if (m[1]) {
+      out.push(["close", name]);
+      continue;
+    }
+    const attrs = new Map();
+    for (const a of m[3].matchAll(ATTR)) {
+      const v = [a[2], a[3], a[4]].find((x) => x !== undefined) ?? "";
+      const key = asciiLower(a[1]);
+      if (!attrs.has(key)) attrs.set(key, unescape(v));
+    }
+    const closed = Boolean(m[4]);
+    out.push(["open", name, attrs, closed]);
+    if ((name === "script" || name === "style") && !closed) {
+      const re = new RegExp("</" + [...name].map((c) => `[${c}${c.toUpperCase()}]`).join(""), "gu");
+      re.lastIndex = k;
+      const end = re.exec(html);
+      k = end === null ? n : end.index;
+    }
+  }
+  return out;
+}
+
+const fold = (t) => stripChars(t.replace(HTML_WS, " "), " ");
+const attr = (a, ...keys) => {
+  for (const key of keys) if (a.get(key)) return a.get(key);
+  return "";
+};
+const isButton = (name, attrs) => name === "button" || (name === "a" && (attrs.get("class") ?? "").split(HTML_WS1).includes("btn"));
+
+// The text of an HTML page as Markdown for ids; see extract in japango.py.
+function extract(html) {
+  const blocks = [];    // [kind, text, flush number]: kind "text", "li" or "mark"
+  const pieces = [];    // ["t", text], ["br"], ["m", line], ["c", code]
+  const stack = [];     // open block elements
+  let skip = 0, cap = null, flushes = 0;  // cap: [name, attrs, text] inside a button, code or pre
+  const counts = { "ボタン": 0, "コード": 0, "画像": 0 };
+
+  const mark = (kind, t) => {
+    counts[kind] += 1;
+    return `〔${kind}: ${t}〕`;
+  };
+
+  const flush = () => {
+    const heading = [...stack].reverse().find((x) => HEADING.test(x)) ?? null;
+    const item = [...stack].reverse().find((x) => ["li", "dt", "dd", "td", "th"].includes(x)) ?? null;
+    const inText = pieces.some((p) => p[0] === "t" && fold(p[1]));
+    const segs = [];
+    let cur = [];
+    const endText = () => {
+      const lines = cur.join("").replace(CJK_BREAK, "").split("\0").map(fold).filter((x) => x);
+      if (lines.length && heading) segs.push(["text", "#".repeat(Number(heading[1])) + " " + lines.join("")]);
+      else if (lines.length) segs.push(item === "li" ? ["li", "- " + lines.join("\n")] : ["text", lines.join("\n")]);
+      cur = [];
+    };
+    for (const p of pieces) {
+      if (p[0] === "t") {
+        // a line break in the source is a space (none between Japanese
+        // characters); only <br>, here \0, breaks the line
+        cur.push(p[1].replaceAll("\0", ""));
+      } else if (p[0] === "br") {
+        cur.push("\0");
+      } else if (p[0] === "c" && inText) {
+        cur.push("`" + fold(p[1]) + "`");
+      } else {
+        endText();
+        segs.push(["mark", p[0] === "m" ? p[1] : mark("コード", fold(p[1]))]);
+      }
+    }
+    endText();
+    pieces.length = 0;
+    const n = flushes;
+    for (const [kind, t] of segs) {
+      // marks next to each other in one block stay one paragraph, and so do list items
+      const last = blocks.at(-1);
+      if (last && last[0] === kind && (kind === "li" || (kind === "mark" && last[2] === n))) last[1] += "\n" + t;
+      else blocks.push([kind, t, n]);
+    }
+    flushes = n + 1;
+  };
+
+  const endCapture = () => {
+    const [name, a] = cap;
+    let t = cap[2];
+    cap = null;
+    if (name === "pre") {
+      // a blank line would end the paragraph ids keeps as is
+      t = stripChars(t, "\n").split("\n").filter((x) => /[^ \t\r\f]/u.test(x)).join("\n");
+      if (t) pieces.push(["m", mark("コード", t)]);
+      flush();
+    } else if (name === "code" && fold(t)) {
+      pieces.push(["c", t]);
+    } else if (name !== "code") {
+      t = fold(t) || fold(attr(a, "aria-label", "title", "value"));
+      const href = a.get("href") ?? "";
+      if (t) pieces.push(["m", mark("ボタン", t + (href ? " → " + href : ""))]);
+    }
+  };
+
+  for (const tok of htmlTokens(html)) {
+    const kind = tok[0];
+    const name = kind !== "text" ? tok[1] : "";
+    if (skip) {
+      if (kind === "open" && SKIP_TAGS.has(name) && !tok[3]) skip += 1;
+      else if (kind === "close" && SKIP_TAGS.has(name)) skip -= 1;
+      continue;
+    }
+    if (kind === "open" && SKIP_TAGS.has(name)) {
+      if (!tok[3]) skip = 1;
+      continue;
+    }
+    if (cap !== null) {
+      if (kind === "text") cap[2] += unescape(tok[1]);
+      else if (kind === "open" && name === "br") cap[2] += "\n";
+      else if (kind === "close" && name === cap[0]) endCapture();
+      continue;
+    }
+    if (kind === "text") {
+      pieces.push(["t", unescape(tok[1])]);
+    } else if (kind === "open") {
+      const [, , attrs, closed] = tok;
+      if (name === "br") {
+        pieces.push(["br"]);
+      } else if (name === "img" || name === "video") {
+        const t = fold(attr(attrs, "alt", "aria-label", "title", "poster"));
+        if (t) pieces.push(["m", mark("画像", t)]);
+      } else if (closed) {
+        if (BLOCK_TAGS.has(name)) flush();
+      } else if (name === "pre") {
+        flush();
+        cap = ["pre", attrs, ""];
+      } else if (name === "code" || isButton(name, attrs)) {
+        cap = [name, attrs, ""];
+      } else if (BLOCK_TAGS.has(name)) {
+        flush();
+        if (name !== "hr") stack.push(name);
+      }
+    } else if (BLOCK_TAGS.has(name)) {
+      flush();
+      const at = stack.lastIndexOf(name);
+      if (at !== -1) stack.length = at;
+    }
+  }
+  if (cap !== null) endCapture();
+  flush();
+  counts["段落"] = blocks.length;
+  const md = blocks.map((b) => b[1]).join("\n\n");
+  return [md ? md + "\n" : "", counts];
+}
+
+function cmdExtract(src, out) {
+  if (resolve(out) === resolve(src)) {
+    console.error("extract: -o is the page itself; the page is never overwritten");
+    return 2;
+  }
+  const [md, counts] = extract(readText(src));
+  writeText(out, md);
+  console.log(dumps({ paragraphs: counts["段落"], buttons: counts["ボタン"], code: counts["コード"], images: counts["画像"], out }));
+  return 0;
+}
+
 const USAGE = "usage: japango.mjs {ids SRC WORKDIR | merge UNITS OUT {agree,union} FINDINGS... | " +
-  "assemble UNITS MERGED LOG_JSON [--out OUT_MD]}";
+  "assemble UNITS MERGED LOG_JSON [--out OUT_MD] | extract SRC -o OUT}";
 
 function main(argv) {
   const fail = (msg) => {
     console.error(USAGE + "\njapango.mjs: error: " + msg);
     return 2;
   };
-  let out = null;
+  let out = null, o = null;
   const args = [];
   for (let k = 0; k < argv.length; k++) {
-    if (argv[k] === "--out") {
+    if (argv[k] === "-o") {
+      if (k + 1 >= argv.length) return fail("-o needs a path");
+      o = argv[++k];
+    } else if (argv[k] === "--out") {
       if (k + 1 >= argv.length) return fail("--out needs a path");
       out = argv[++k];
     } else if (argv[k].startsWith("--out=")) {
@@ -916,6 +1177,8 @@ function main(argv) {
     }
   }
   const [cmd, ...rest] = args;
+  if (cmd === "extract" && rest.length === 1 && o !== null && out === null) return cmdExtract(rest[0], o);
+  if (o !== null) return fail("-o is only for extract");
   if (cmd === "ids" && rest.length === 2 && out === null) return cmdIds(...rest);
   if (cmd === "merge" && rest.length >= 4 && out === null) {
     if (!["agree", "union"].includes(rest[2])) return fail(`invalid mode ${rest[2]}`);

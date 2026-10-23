@@ -78,6 +78,36 @@ class Parity(unittest.TestCase):
             with self.subTest(case=case.name):
                 self.check_case(case)
 
+    def test_extract(self):
+        """Folders with a page.html: extract writes the same Markdown, which ids keeps
+        whole (round_trip ok) and assemble with no findings leaves as it is."""
+        cases = sorted(p for p in CASES.iterdir() if (p / "page.html").exists())
+        self.assertGreaterEqual(len(cases), 1)
+        for case in cases:
+            with self.subTest(case=case.name):
+                base = self.tmp / ("x-" + case.name)
+                base.mkdir()
+                printed = {}
+                for lang in ("py", "js"):
+                    w = base / lang
+                    w.mkdir()
+                    md = w / "page.md"
+                    printed[lang] = [run(lang, ["extract", case / "page.html", "-o", md], w)]
+                    printed[lang].append(run(lang, ["ids", md, w], w))
+                    (w / "m.jsonl").write_text("", encoding="utf-8")
+                    printed[lang].append(run(lang, ["assemble", w / "page.units.jsonl", w / "m.jsonl",
+                                                    w / "log.json", "--out", w / "out.md"], w))
+                    self.assertIn('"round_trip": "ok"', printed[lang][1][1], lang)
+                    self.same(w / "out.md", md, f"{case.name}: {lang} assemble with no findings")
+                self.assertEqual(printed["py"], printed["js"], f"{case.name}: printed")
+                for name in ("page.md", "page.annotated.txt", "log.json"):
+                    self.same(base / "py" / name, base / "js" / name, f"{case.name}: {name}")
+                # the units file names its source, which is in each language's folder
+                units = [(base / lang / "page.units.jsonl").read_text(encoding="utf-8")
+                         .replace(json.dumps(str(base / lang), ensure_ascii=False)[1:-1], "<work>")
+                         for lang in ("py", "js")]
+                self.assertEqual(units[0], units[1], f"{case.name}: page.units.jsonl")
+
     def test_refuses_to_overwrite_source(self):
         src = self.tmp / "source.md"
         shutil.copy(CASES / "edge" / "source.md", src)

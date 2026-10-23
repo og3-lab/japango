@@ -1,0 +1,10 @@
+{"id": "p2-s1", "pattern": "型20c 「で」の重なり", "quote": "1 回の推敲で、原稿 3 本で", "effect": "1 回で 3 本を扱うのかで止まる", "route": "rewrite", "fix": "原稿 3 本の推敲で、およそ 10 万トークンかかります。"}
+{"id": "p2-s1", "pattern": "型32 読みが割れる数字", "quote": "10 万トークン", "effect": "3 本の合計か 1 本あたりか決まらず、見積もれない。", "route": "ask", "fix": "〔10 万トークンは原稿 3 本の合計か、1 本あたりか〕"}
+{"id": "p2-s2", "pattern": "型31 根拠の無い断定", "quote": "おすすめします", "effect": "Node.js を入れるべきか判断できない", "route": "ask", "fix": "〔Node.js を勧める理由は何か〕〔Python ではいけない理由は何か〕"}
+{"id": "p3-s1", "pattern": "型31 主体の無い判断", "quote": "決めました", "effect": 3, "route": "ask", "fix": "〔どの管理者が決めたか〕"}
+{"id": "p3-s2", "pattern": "型6 言い直しだけの文", "quote": "古い設定は使いません。", "effect": "次の文と同じことを言う", "route": "delete", "fix": ""}
+{"id": "p3-s2", "pattern": "型31 根拠の無い断定", "quote": "古い設定", "effect": "なぜ古い設定をやめたか分からない", "route": "ask", "fix": "〔古い設定をやめた理由は何か〕"}
+{"id": "p4-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "受付は表に残し、月末に集計します。", "join": ["p4-s1", "p4-s2"]}
+{"id": "p4-s1", "pattern": "型31 出典の無い記録", "quote": "表", "effect": "どの表か分からず探せない", "route": "ask", "fix": "〔どの表に残すか〕"}
+{"id": "p5-s1", "pattern": "型31 根拠の無い見出し", "quote": "問い合わせ", "effect": "何の問い合わせか分からない", "route": "ask", "fix": "〔どの窓口への問い合わせか〕"}
+{"id": "p6-s2", "pattern": "型31", "quote": "謝ります", "route": "ask", "fix": "〔誰が謝るか〕"}

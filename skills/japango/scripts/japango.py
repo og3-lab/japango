@@ -20,6 +20,8 @@ Standard library only (Python 3.8+).
       When runs rewrite one ID toward different words, neither rewrite is used:
       the ID becomes an ask that names the words, since which one the writer
       meant is not in the text.
+      An ID's questions carry the "effect" of the findings that asked them
+      (what the reader is stuck on), as "effect".
       A rewrite may join sentences: "join" lists the IDs it replaces, the first
       being "id", all in a row in one prose paragraph (not headings or list
       items). A join is taken only when no run keeps a sentence in it; in agree
@@ -36,7 +38,8 @@ Standard library only (Python 3.8+).
       ask -> the sentence stays and gets a 〔確認n〕 mark. A rewritten sentence that
       brings a cause, limit or time word, or a number, that the whole original
       never had is put back to the original. Questions are listed at the end;
-      several questions on one sentence share one mark. keep rows are logged in
+      several questions on one sentence share one mark, and a finding's effect
+      follows its last question as （読者が困ること: ...）. keep rows are logged in
       changes as 残した. A join puts its sentence where the first one was and
       empties the rest; when it is put back, every sentence in it is.
       Two things are only reported, never fixed: a word that appears only in a
@@ -50,6 +53,12 @@ Standard library only (Python 3.8+).
       numbered on from the highest 〔確認n〕, go at its end. Marks are not part
       of the original for the check; a rewrite keeps the marks it held, and a
       join over a sentence that is only a mark is not taken ("join over mark").
+
+  extract PAGE.html -o OUT_MD
+      Take the text out of an HTML page as Markdown for ids: headings as #, list
+      items, paragraphs, dt and dd; head, script, style and svg dropped. Buttons,
+      code and pictures become 〔ボタン: text → href〕, 〔コード: ...〕 and
+      〔画像: alt〕 lines, which ids keeps as is (raw).
 """
 import argparse
 import json
@@ -74,6 +83,10 @@ EDIT_ROUTES = ("rewrite", "delete")
 # words that state a cause or a limit, and words that bound a time
 ADDED_MARKERS = ["だけ", "のみ", "紛れ", "ため", "により", "によって", "原因", "せいで"]
 SINGLE_REWRITE_ASK = "〔「{head}」の書き直しで、原文に無い行動・出来事が増えていないか〕"
+# the questions merge adds by itself (SINGLE_REWRITE_ASK, ALIGN_ASK, ALIGN_ASK1), which
+# no finding's "effect" speaks for
+AUTO_ASK = re.compile(r"「.*」の書き直しで、原文に無い行動・出来事が増えていないか"
+                      r"|(?:「[^」]*」・)+「[^」]*」のどれにそろえるか|「[^」]*」とほかの回の言い方のどちらにそろえるか")
 TIME_MARKERS = ["まで", "以降", "以前", "までに"]
 NUM = re.compile(r"\d+(?:\.\d+)?")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -98,6 +111,8 @@ LEAD_MARKS = re.compile(r"(?:〔確認[0-9]+〕)+")
 CONFIRM_HEAD = "---\n\n## 確認欄\n\n"
 CONFIRM_ITEM = re.compile(r"(?:- 〔確認[0-9]+〕|  - |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: "
                           r"|- 言い直しとして削った文にしか無い語: )")
+# the lines extract writes for a button, code and a picture
+MARK_LINE = re.compile(r"〔(?:ボタン|コード|画像): ")
 # a deletion as a restatement (型 6) says the sentence adds nothing; a word found
 # nowhere else in the body says otherwise
 RESTATE = re.compile(r"^\s*型\s*6(?![0-9a-z])")
@@ -178,8 +193,10 @@ def blocks_of(body):
 
 
 def is_raw(lines):
-    """Tables and HTML are not split; the finder does not see them."""
-    return all(l.lstrip().startswith("|") for l in lines) or lines[0].lstrip().startswith("<")
+    """Tables, HTML and the 〔ボタン: …〕 lines extract writes are not split; the
+    finder does not see them."""
+    return (all(l.lstrip().startswith("|") for l in lines) or lines[0].lstrip().startswith("<")
+            or bool(MARK_LINE.match(lines[0].lstrip())))
 
 
 def sentences(para):
@@ -318,7 +335,8 @@ def merge_findings(rows):
     (rewrite, then delete) wins over ask, so a run that only asked cannot keep a
     sentence another run fixed; its question still goes to the confirmation list.
     Questions come from the earliest run that asked, so two runs do not stack
-    the same question twice.
+    the same question twice. The "effect" of the findings those questions came
+    from goes along as "effect".
     """
     by_id = {}
     for r in rows:
@@ -328,7 +346,8 @@ def merge_findings(rows):
         routes = {r["route"] for r in rs}
         ask_rows = [r for r in rs if r["route"] == "ask" and r.get("fix")]
         first_src = min((r.get("src", 0) for r in ask_rows), default=None)
-        asks = "".join(r["fix"] for r in ask_rows if r.get("src", 0) == first_src)
+        asking = [r for r in ask_rows if r.get("src", 0) == first_src]
+        asks = "".join(r["fix"] for r in asking)
         if "keep" in routes and asks:
             merged.append({"id": i, "route": "ask", "fix": asks})
         elif "keep" in routes:
@@ -344,7 +363,23 @@ def merge_findings(rows):
                            "pattern": first.get("pattern", "")})
         else:
             merged.append({"id": i, "route": "ask", "fix": asks})
+        # what the reader is stuck on, from the findings that asked: the writer answers
+        # the question with it in view, not the question alone
+        effect = effects_of(asking)
+        if asks and effect and merged[-1]["route"] != "keep":
+            merged[-1]["effect"] = effect
     return merged
+
+
+def effects_of(rows):
+    """The "effect" of each row, without a closing 。 and without repeats, joined by ／."""
+    out = []
+    for r in rows:
+        e = r.get("effect")
+        e = e.strip().rstrip("。").strip() if isinstance(e, str) else ""
+        if e and e not in out:
+            out.append(e)
+    return "／".join(out)
 
 
 def merge_findings_agree(rows, runs):
@@ -493,6 +528,8 @@ def merge(us, runs, mode="agree"):
             merged.remove(head)
         merged.append({"id": a["id"], "route": "rewrite", "fix": a.get("fix", ""), "ask": asks,
                        "pattern": a.get("pattern", ""), "join": a["join"]})
+        if asks and head.get("effect"):
+            merged[-1]["effect"] = head["effect"]
     if mode == "union" and len(runs) > 1:
         # a rewrite only one run proposed goes in, but the writer checks it: a single
         # run's rewrite is where new actions or events slipped in during tests
@@ -627,10 +664,10 @@ def assemble(us, merged):
         if f["route"] == "delete":
             new = ""
             if f.get("ask"):
-                confirm.append({"id": f["id"], "ask": f["ask"]})
+                confirm.append(asked(f, f["ask"]))
         elif f["route"] == "ask":
             new = old.strip()
-            confirm.append({"id": f["id"], "ask": f["fix"]})
+            confirm.append(asked(f, f["fix"]))
         else:
             new = (f.get("fix") or "").strip()
             bare = MARK.sub("", new)
@@ -641,7 +678,7 @@ def assemble(us, merged):
                                      **({"join": span} if span else {})))
                 new, span = old.strip(), None
             if f.get("ask"):
-                confirm.append({"id": f["id"], "ask": f["ask"]})
+                confirm.append(asked(f, f["ask"]))
         if new and prefix and not new.startswith(prefix.strip()):
             new = prefix + new
         if f["route"] == "rewrite":
@@ -728,6 +765,15 @@ def assemble(us, merged):
            "dangling": dangling, "lost": lost, "orphans": orphans,
            "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - sum(len(c.get("join") or [c]) for c in edited)}
     return body, log
+
+
+def asked(f, ask):
+    """A confirmation entry: the questions, and what the reader is stuck on when the
+    finding said so."""
+    c = {"id": f["id"], "ask": ask}
+    if isinstance(f.get("effect"), str) and f["effect"]:
+        c["effect"] = f["effect"]
+    return c
 
 
 def keep_marks(olds, new):
@@ -844,8 +890,13 @@ def orphan_line(o):
 
 
 def confirm_lines(c):
-    """One question on the same line as its mark; several, one per line under it."""
-    qs = c["questions"]
+    """One question on the same line as its mark; several, one per line under it.
+    What the reader is stuck on follows the finding's last question (not a question
+    merge added on its own, such as SINGLE_REWRITE_ASK)."""
+    qs = list(c["questions"])
+    own = [k for k, q in enumerate(qs) if not AUTO_ASK.fullmatch(q)]
+    if c.get("effect") and own:
+        qs[own[-1]] += f"（読者が困ること: {c['effect']}）"
     head = f"（見出し「{c['heading']}」）" if c.get("heading") else ""
     if len(qs) == 1:
         return f"- 〔確認{c['no']}〕{head}{qs[0]}\n"
@@ -886,6 +937,232 @@ def cmd_assemble(units_path, merged_path, log_path, out_path=None):
     return 0
 
 
+# ---------- extract ----------
+
+# a hand-written reader, not html.parser, so japango.mjs can read a page the same way
+# (white space is HTML's, the ASCII five, in every pattern here)
+TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[ \t\n\r\f]+[^ \t\n\r\f\"'>/=]+(?:[ \t\n\r\f]*=[ \t\n\r\f]*"
+                 r"(?:\"[^\"]*\"|'[^']*'|[^ \t\n\r\f\"'>]+))?)*)[ \t\n\r\f]*(/?)[ \t\n\r\f]*>")
+ATTR = re.compile(r"([^ \t\n\r\f\"'>/=]+)(?:[ \t\n\r\f]*=[ \t\n\r\f]*(?:\"([^\"]*)\"|'([^']*)'|([^ \t\n\r\f\"'>]+)))?")
+ENTITY = re.compile(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z]+);")
+ENTITIES = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'", "nbsp": " ", "copy": "©",
+            "hellip": "…", "mdash": "—", "ndash": "–", "laquo": "«", "raquo": "»", "times": "×",
+            "yen": "¥", "middot": "·", "rarr": "→", "larr": "←"}
+# only ASCII white space folds; a full-width space is part of the text
+HTML_WS = re.compile(r"[ \t\n\r\f]+")
+# elements whose content is not text to read
+SKIP_TAGS = {"head", "script", "style", "svg", "template", "noscript", "iframe", "canvas", "object", "select"}
+BLOCK_TAGS = {"address", "article", "aside", "blockquote", "body", "caption", "dd", "details", "dialog", "div",
+              "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
+              "h6", "header", "hr", "html", "li", "main", "nav", "ol", "p", "section", "summary",
+              "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"}
+HEADING = re.compile(r"h[1-6]")
+# a line break between two Japanese characters, which a page wraps without a space
+CJK = "　-ヿ㐀-鿿豈-﫿＀-￯"
+CJK_BREAK = re.compile(f"(?<=[{CJK}])[ \\t\\r\\f]*\\n[ \\t\\n\\r\\f]*(?=[{CJK}])")
+
+
+def unescape(t):
+    def one(m):
+        e = m.group(1)
+        if e[0] == "#":
+            n = int(e[2:], 16) if e[1] in "xX" else int(e[1:])
+            return chr(n) if 0 < n < 0x110000 and not 0xD800 <= n < 0xE000 else m.group(0)
+        return ENTITIES.get(e, m.group(0))
+    return ENTITY.sub(one, t)
+
+
+def ascii_lower(t):
+    return re.sub("[A-Z]", lambda m: m.group(0).lower(), t)
+
+
+def html_tokens(html):
+    """("text", s), ("open", name, attrs, self_closing) and ("close", name), in order.
+    Comments and <!...> are dropped; the content of script and style is skipped whole."""
+    out, k, n = [], 0, len(html)
+    while k < n:
+        lt = html.find("<", k)
+        if lt == -1:
+            out.append(("text", html[k:]))
+            break
+        if lt > k:
+            out.append(("text", html[k:lt]))
+        if html.startswith("<!--", lt):
+            end = html.find("-->", lt + 4)
+            k = n if end == -1 else end + 3
+            continue
+        if html.startswith("<!", lt) or html.startswith("<?", lt):
+            end = html.find(">", lt)
+            k = n if end == -1 else end + 1
+            continue
+        m = TAG.match(html, lt)
+        if not m:
+            out.append(("text", "<"))
+            k = lt + 1
+            continue
+        name = ascii_lower(m.group(2))
+        k = m.end()
+        if m.group(1):
+            out.append(("close", name))
+            continue
+        attrs = {}
+        for a in ATTR.finditer(m.group(3)):
+            v = next((x for x in a.groups()[1:] if x is not None), "")
+            attrs.setdefault(ascii_lower(a.group(1)), unescape(v))
+        closed = bool(m.group(4))
+        out.append(("open", name, attrs, closed))
+        if name in ("script", "style") and not closed:
+            end = re.compile("</" + "".join(f"[{c}{c.upper()}]" for c in name)).search(html, k)
+            k = n if end is None else end.start()
+    return out
+
+
+def fold(t):
+    return HTML_WS.sub(" ", t).strip(" ")
+
+
+def is_button(name, attrs):
+    return name == "button" or (name == "a" and "btn" in HTML_WS.split(attrs.get("class", "")))
+
+
+def extract(html):
+    """The text of an HTML page as Markdown for ids. Returns (markdown, counts).
+
+    Headings become #, list items "- ", and p, dt, dd and table cells paragraphs;
+    head, script, style and svg go. A button (button, or an a with class btn)
+    becomes 〔ボタン: text → href〕, pre and code 〔コード: …〕, and img and video
+    with alt, aria-label, title or poster 〔画像: …〕, each on a line of its own
+    (ids keeps a paragraph of them as is). code inside a sentence stays in it as `…`."""
+    blocks = []      # [kind, text, flush number]: kind "text", "li" or "mark"
+    pieces = []      # ("t", text), ("br",), ("m", line), ("c", code)
+    stack = []       # open block elements
+    state = {"skip": 0, "cap": None, "flushes": 0}  # cap: [name, attrs, text] inside a button, code or pre
+    counts = {"ボタン": 0, "コード": 0, "画像": 0}
+
+    def mark(kind, t):
+        counts[kind] += 1
+        return f"〔{kind}: {t}〕"
+
+    def flush():
+        heading = next((x for x in reversed(stack) if HEADING.fullmatch(x)), None)
+        item = next((x for x in reversed(stack) if x in ("li", "dt", "dd", "td", "th")), None)
+        in_text = any(p[0] == "t" and fold(p[1]) for p in pieces)
+        segs, cur = [], []
+
+        def end_text():
+            lines = [x for x in (fold(x) for x in CJK_BREAK.sub("", "".join(cur)).split("\0")) if x]
+            if lines and heading:
+                segs.append(["text", "#" * int(heading[1]) + " " + "".join(lines)])
+            elif lines:
+                segs.append(["li", "- " + "\n".join(lines)] if item == "li" else ["text", "\n".join(lines)])
+            cur.clear()
+        for p in pieces:
+            if p[0] == "t":
+                # a line break in the source is a space (none between Japanese
+                # characters); only <br>, here \0, breaks the line
+                cur.append(p[1].replace("\0", ""))
+            elif p[0] == "br":
+                cur.append("\0")
+            elif p[0] == "c" and in_text:
+                cur.append("`" + fold(p[1]) + "`")
+            else:
+                end_text()
+                segs.append(["mark", p[1] if p[0] == "m" else mark("コード", fold(p[1]))])
+        end_text()
+        pieces.clear()
+        n = state["flushes"]
+        for kind, t in segs:
+            # marks next to each other in one block stay one paragraph, and so do list items
+            if blocks and blocks[-1][0] == kind and (kind == "li" or kind == "mark" and blocks[-1][2] == n):
+                blocks[-1][1] += "\n" + t
+            else:
+                blocks.append([kind, t, n])
+        state["flushes"] = n + 1
+
+    def end_capture():
+        name, a, t = state["cap"]
+        state["cap"] = None
+        if name == "pre":
+            # a blank line would end the paragraph ids keeps as is
+            t = "\n".join(x for x in t.strip("\n").split("\n") if x.strip(" \t\r\f"))
+            if t:
+                pieces.append(("m", mark("コード", t)))
+            flush()
+        elif name == "code" and fold(t):
+            pieces.append(("c", t))
+        elif name != "code":
+            t = fold(t) or fold(a.get("aria-label") or a.get("title") or a.get("value") or "")
+            href = a.get("href", "")
+            if t:
+                pieces.append(("m", mark("ボタン", t + (" → " + href if href else ""))))
+
+    for tok in html_tokens(html):
+        kind = tok[0]
+        name = tok[1] if kind != "text" else ""
+        if state["skip"]:
+            if kind == "open" and name in SKIP_TAGS and not tok[3]:
+                state["skip"] += 1
+            elif kind == "close" and name in SKIP_TAGS:
+                state["skip"] -= 1
+            continue
+        cap = state["cap"]
+        if kind == "open" and name in SKIP_TAGS:
+            if not tok[3]:
+                state["skip"] = 1
+            continue
+        if cap is not None:
+            if kind == "text":
+                cap[2] += unescape(tok[1])
+            elif kind == "open" and name == "br":
+                cap[2] += "\n"
+            elif kind == "close" and name == cap[0]:
+                end_capture()
+            continue
+        if kind == "text":
+            pieces.append(("t", unescape(tok[1])))
+        elif kind == "open":
+            attrs, closed = tok[2], tok[3]
+            if name == "br":
+                pieces.append(("br",))
+            elif name in ("img", "video"):
+                t = fold(attrs.get("alt") or attrs.get("aria-label") or attrs.get("title") or attrs.get("poster") or "")
+                if t:
+                    pieces.append(("m", mark("画像", t)))
+            elif closed:
+                if name in BLOCK_TAGS:
+                    flush()
+            elif name == "pre":
+                flush()
+                state["cap"] = ["pre", attrs, ""]
+            elif name == "code" or is_button(name, attrs):
+                state["cap"] = [name, attrs, ""]
+            elif name in BLOCK_TAGS:
+                flush()
+                if name != "hr":
+                    stack.append(name)
+        elif name in BLOCK_TAGS:
+            flush()
+            if name in stack:
+                del stack[len(stack) - 1 - stack[::-1].index(name):]
+    if state["cap"] is not None:
+        end_capture()
+    flush()
+    counts["段落"] = len(blocks)
+    md = "\n\n".join(b[1] for b in blocks)
+    return (md + "\n" if md else ""), counts
+
+
+def cmd_extract(src, out):
+    if Path(out).resolve() == Path(src).resolve():
+        print("extract: -o is the page itself; the page is never overwritten", file=sys.stderr)
+        return 2
+    md, counts = extract(read_text(src))
+    write_text(out, md)
+    print(json.dumps({"paragraphs": counts["段落"], "buttons": counts["ボタン"],
+                      "code": counts["コード"], "images": counts["画像"], "out": str(out)}, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -905,7 +1182,12 @@ def main(argv=None):
     s.add_argument("log_json")
     s.add_argument("--out", dest="out_md", default=None,
                    help="write here instead of <source stem>.japango.md next to the source")
+    x = sub.add_parser("extract", help="take the text out of an HTML page")
+    x.add_argument("src")
+    x.add_argument("-o", dest="out", required=True, help="the Markdown to write")
     args = p.parse_args(argv)
+    if args.cmd == "extract":
+        return cmd_extract(args.src, args.out)
     if args.cmd == "ids":
         return cmd_ids(args.src, args.workdir)
     if args.cmd == "merge":

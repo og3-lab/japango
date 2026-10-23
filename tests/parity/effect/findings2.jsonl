@@ -1,0 +1,6 @@
+{"id": "p2-s1", "pattern": "型32 読みが割れる数字", "quote": "10 万トークン", "effect": "自分の原稿でどれだけかかるか見積もれない", "route": "ask", "fix": "〔10 万トークンは 1 本あたりか〕"}
+{"id": "p2-s2", "pattern": "型31 根拠の無い断定", "quote": "おすすめします", "effect": "判断できない", "route": "keep", "fix": ""}
+{"id": "p3-s1", "pattern": "型31 主体の無い判断", "quote": "決めました", "effect": "誰の判断か分からず信用できない", "route": "ask", "fix": "〔誰が決めたか〕"}
+{"id": "p3-s2", "pattern": "型6 言い直しだけの文", "quote": "古い設定は使いません。", "effect": "同じことの言い直し", "route": "delete", "fix": ""}
+{"id": "p4-s2", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p6-s2", "pattern": "型31", "quote": "謝ります", "effect": "  ", "route": "ask", "fix": "〔誰が謝るか〕"}
