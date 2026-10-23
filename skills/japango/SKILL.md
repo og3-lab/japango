@@ -51,7 +51,7 @@ japango ids <原稿> <作業>
 ## 2. 見つける役に指摘一覧を書かせる
 見つける役は、`references/finder.md` と `references/rubric.md` を読み、`<名前>.annotated.txt` を読んで、次の 2 つのファイルをこの順に書く。
 
-- 書き出し（`<作業>/notes1.md`、2 回目は `notes2.md`）: finder.md の「書き出してから照らす」10 項目（名詞句・文末・否定の形・言い直し／締め／食い違い／作った事実・指示語と形式名詞・文の途中のかっこ・同じ助詞の重なり・人を指す語・主題と述語・動詞）
+- 書き出し（`<作業>/notes1.md`、2 回目は `notes2.md`）: finder.md の「書き出してから照らす」10 項目（名詞句・文末・否定の形・言い直し／締め／食い違い／作った事実・指示語と形式名詞・文の途中のかっこ・同じ助詞の重なり・人を指す語・字義どおりの読み・動詞）
 - 指摘一覧（`<作業>/findings1.jsonl`、2 回目は `findings2.jsonl`）: 1 件 1 行の JSON `{id, pattern, quote, effect, route, fix}`
 
 route は delete（削る）／rewrite（言い換える。fix に完成した文）／ask（書き手に聞く。fix に問いだけ）／keep（残す）。

@@ -122,6 +122,6 @@ japango の物差しの調整に使っていない 3 本（社内報告・解説
 | `skills/japango/scripts/japango.mjs` | 同じものの Node.js 版。直すときは両方を直す |
 | `skills/japango/.codex-plugin/plugin.json` | Codex 用の設定 |
 | `.claude-plugin/` | Claude Code のプラグインの設定 |
-| `evals/` | 試験の素材 8 組と正解表、採点の手順 |
+| `evals/` | 試験の素材 9 組と正解表、採点の手順 |
 | `tests/test_japango.py` | スクリプトのテスト（`python -m unittest discover -s tests`） |
 | `tests/test_parity.py`・`tests/parity/` | 試験で記録した原稿と、つなぐ・2 回目の組み立てを確かめる原稿、言い直しで削った文の語を確かめる原稿の計 14 本と指摘一覧を両方の版に通し、出力が一字一句同じかを確かめるテスト（Node が無ければ飛ばす） |
