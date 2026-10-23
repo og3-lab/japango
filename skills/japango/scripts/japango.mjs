@@ -506,7 +506,10 @@ function cmdMerge(unitsPath, outPath, mode, findingPaths) {
 const MARKERS = ADDED_MARKERS.concat(TIME_MARKERS);
 
 function addedWords(nw, origDoc, origNums) {
-  const hits = MARKERS.filter((m) => nw.includes(m) && !origDoc.includes(m));
+  // 「まま」is not a time word: 「書式のままです」 holds 「まで」 only across the two words
+  const probe = nw.replaceAll("まま", "＿＿");
+  const src = origDoc.replaceAll("まま", "＿＿");
+  const hits = MARKERS.filter((m) => probe.includes(m) && !src.includes(m));
   return hits.concat(findall(NUM, nw).filter((n) => !origNums.has(n)));
 }
 

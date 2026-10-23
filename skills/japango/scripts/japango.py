@@ -447,7 +447,9 @@ def cmd_merge(units_path, out_path, mode, finding_paths):
 
 def added_words(new, orig_doc, orig_nums):
     """Cause, limit and time words, and numbers, in new that the whole original never had."""
-    hits = [m for m in ADDED_MARKERS + TIME_MARKERS if m in new and m not in orig_doc]
+    # 「まま」is not a time word: 「書式のままです」 holds 「まで」 only across the two words
+    probe, src = new.replace("まま", "＿＿"), orig_doc.replace("まま", "＿＿")
+    hits = [m for m in ADDED_MARKERS + TIME_MARKERS if m in probe and m not in src]
     hits += [n for n in NUM.findall(new) if n not in orig_nums]
     return hits
 

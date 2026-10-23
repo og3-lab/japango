@@ -289,6 +289,14 @@ class Assemble(unittest.TestCase):
         self.assertEqual(body, text)
         self.assertEqual(log["reverted"][0]["words"], ["85"])
 
+    def test_mama_desu_is_not_a_new_time_word(self):
+        text = "会議は、それぞれの書式で整えます。\n"
+        body, log = self.build(text, [{"id": "p1-s1", "route": "rewrite", "fix": "会議は、それぞれの書式のままです。"}])
+        self.assertEqual(log["reverted"], [])
+        self.assertIn("書式のままです。", body)
+        body, log = self.build(text, [{"id": "p1-s1", "route": "rewrite", "fix": "会議は、月末まで書式で整えます。"}])
+        self.assertEqual(log["reverted"][0]["words"], ["まで"])
+
     def test_new_cause_word_reverts_but_existing_word_passes(self):
         text = "警告は誰も見なかった。メールが多いため埋もれた。\n"
         body, log = self.build(text, [
