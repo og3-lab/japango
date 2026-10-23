@@ -1,0 +1,7 @@
+{"id": "p2-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "今は、ほとんどがボットから入り、電話で頼む人はまだ週に数人です。", "join": ["p2-s1", "p2-s2"]}
+{"id": "p2-s2", "pattern": "型31", "quote": "", "effect": "", "route": "ask", "fix": "〔誰が電話で頼むか〕"}
+{"id": "p3-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "窓口は朝九時に開き、担当は二人です。", "join": ["p3-s1", "p3-s2"]}
+{"id": "p3-s3", "pattern": "型12", "quote": "", "effect": "", "route": "rewrite", "fix": "昼は一人で受けます。"}
+{"id": "p4-s3", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "集計は課長が見て、返事は翌日までに送ります。", "join": ["p4-s3", "p5-s1"]}
+{"id": "p5-s2", "pattern": "", "quote": "", "effect": "", "route": "keep", "fix": ""}
+{"id": "p7-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "新しい手順に移ったため、古い手順は使いません。", "join": ["p7-s1", "p7-s2"]}

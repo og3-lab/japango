@@ -1,0 +1,7 @@
+{"id": "p2-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "今は、ほとんどがボットから入りますが、電話で頼む人もまだ週に数人います。", "join": ["p2-s1", "p2-s2"]}
+{"id": "p3-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "窓口は朝九時に開き、昼は一人になります。", "join": ["p3-s1", "p3-s3"]}
+{"id": "p3-s2", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "担当は二人で、昼は一人になります。", "join": ["p3-s2", "p3-s3"]}
+{"id": "p4-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "受付の記録は表に残し、月末に集計します。", "join": ["p4-s1", "p4-s2"]}
+{"id": "p5-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "返事は翌日までに送り、急ぎのものは当日に送ります。", "join": ["p5-s1", "p5-s2"]}
+{"id": "p6-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "- 項目の一つ目と二つ目です。", "join": ["p6-s1", "p6-s2"]}
+{"id": "p7-s1", "pattern": "型25 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "新しい手順に移ったため、古い手順は使いません。", "join": ["p7-s1", "p7-s2"]}

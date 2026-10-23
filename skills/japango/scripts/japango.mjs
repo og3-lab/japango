@@ -47,6 +47,17 @@ const POINTER = new RegExp(
   "(?:(?<![\\u4E00-\\u9FFF々])(?:両|同|当該|上記の?|前述の?|先の)|この|その|これらの|それらの)" +
   "([\\u4E00-\\u9FFF々〆ヶァ-ヴー]{1,6})", "gu");
 
+// the mark assemble puts after a sentence, and the confirmation list it writes at the
+// end; see MARK and CONFIRM_ITEM in japango.py
+const MARK = /〔確認[0-9]+〕/gu;
+const MARK_NO = /〔確認([0-9]+)〕/gu;
+const LEAD_MARKS = /^(?:〔確認[0-9]+〕)+/u;
+const CONFIRM_HEAD = "---\n\n## 確認欄\n\n";
+const CONFIRM_ITEM = /^(?:- 〔確認[0-9]+〕|  - |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: |- 言い直しとして削った文にしか無い語: )/u;
+// a deletion as a restatement (型 6); see RESTATE in japango.py
+const RESTATE = /^\s*型\s*6(?![0-9a-z])/u;
+const unmark = (s) => s.replace(MARK, "");
+
 // ---------- Python-compatible helpers ----------
 
 const WS = /^[\s\x1c-\x1f\x85]+|[\s\x1c-\x1f\x85]+$/gu;
@@ -210,11 +221,27 @@ function sentences(para) {
   return out;
 }
 
+// [body before the confirmation list, the list] when the body ends with a list
+// in the form assemble writes; [body, null] otherwise.
+function splitConfirm(body) {
+  let k = body.lastIndexOf("\n\n" + CONFIRM_HEAD), start;
+  if (k !== -1) start = k + 2;
+  else if (body.startsWith(CONFIRM_HEAD)) k = start = 0;
+  else return [body, null];
+  const tail = stripChars(body.slice(start), "\n", false, true);
+  const items = tail.split("\n").slice(4);
+  if (!items.length || !items.every((l) => CONFIRM_ITEM.test(l))) return [body, null];
+  return [body.slice(0, k), tail];
+}
+
 // Units of the body. Each has id, text, para, line (one unit per line)
-// and raw (kept as is, not shown to the finder).
+// and raw (kept as is, not shown to the finder). An earlier assemble's
+// confirmation list at the end is one raw unit with confirm.
 function units(text) {
   const out = [];
-  blocksOf(splitFront(text)[1]).forEach(([gap, lines, code], k) => {
+  const [body, box] = splitConfirm(splitFront(text)[1]);
+  const blocks = blocksOf(body);
+  blocks.forEach(([gap, lines, code], k) => {
     const pi = k + 1;
     const base = { para: pi, gap };
     if (code || isRaw(lines)) {
@@ -228,6 +255,10 @@ function units(text) {
     // keep each sentence's leading spaces so rendering restores the original
     sentences(lines[0]).forEach((s, si) => out.push({ ...base, id: `p${pi}-s${si + 1}`, text: s, line: false }));
   });
+  if (box !== null) {
+    const pi = blocks.length + 1;
+    out.push({ para: pi, gap: blocks.length ? "\n\n" : "\n", id: `p${pi}-s1`, text: box, line: true, raw: true, confirm: true });
+  }
   return out;
 }
 
@@ -383,9 +414,67 @@ function boldFindings(us) {
   return out;
 }
 
+const withoutJoin = (r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== "join"));
+const overlaps = (a, b) => (a || []).some((x) => b.includes(x));
+const sameList = (a, b) => a.length === b.length && a.every((x, k) => x === b[k]);
+
+// [span, error] for a rewrite's "join"; see join_error in japango.py.
+function joinError(r, us, pos) {
+  const j = get(r, "join", null);
+  if (j === null || (Array.isArray(j) && (j.length === 0 || (j.length === 1 && j[0] === r.id)))) return [null, null];
+  if (!Array.isArray(j) || j.length < 2 || j[0] !== r.id || !j.every((x) => typeof x === "string" && pos.has(x))) {
+    return [null, "join not contiguous"];
+  }
+  const ks = j.map((x) => pos.get(x));
+  const xs = ks.map((k) => us[k]);
+  if (ks.some((k, n) => k !== ks[0] + n) || new Set(xs.map((x) => x.para)).size > 1) return [null, "join not contiguous"];
+  if (xs.some((x) => x.raw || x.line)) return [null, "join over lines"];
+  // a sentence that is only an earlier round's 〔確認n〕 mark: joined, the mark would go
+  if (xs.some((x) => unmark(x.text) !== x.text && !strip(unmark(x.text)))) return [null, "join over mark"];
+  return [[...j], null];
+}
+
+// Pick the joins to use; see resolve_joins in japango.py.
+function resolveJoins(rows, mode, runs) {
+  const warnings = [], accepted = [];
+  const kept = new Set(rows.filter((r) => r.route === "keep").map((r) => r.id));
+  const touches = (x, span) => span.includes(x.id) || overlaps(x.join, span);
+  const cands = rows.filter((r) => r.join).sort((a, b) => a.src - b.src);
+  for (const r of cands) {
+    const span = r.join;
+    const clash = accepted.find((a) => overlaps(a.join, span));
+    if (clash) {
+      if (!sameList(clash.join, span)) warnings.push(`run ${r.src + 1}: join span differs ${r.id}`);
+      continue;
+    }
+    if (span.some((x) => kept.has(x))) {
+      warnings.push(`run ${r.src + 1}: join kept ${r.id}`);
+      continue;
+    }
+    if (mode === "agree") {
+      const editors = new Set(rows.filter((x) => EDIT_ROUTES.includes(x.route) && touches(x, span)).map((x) => x.src));
+      if (editors.size < runs) continue;
+    }
+    accepted.push(r);
+  }
+  const inside = new Map();
+  for (const a of accepted) for (const j of a.join) inside.set(j, a.id);
+  const rest = [];
+  for (const r of rows) {
+    if (r.join) continue;
+    if (EDIT_ROUTES.includes(r.route) && inside.has(r.id)) {
+      if (mode === "union") warnings.push(`run ${r.src + 1}: join ${inside.get(r.id)} drops ${r.route} ${r.id}`);
+      continue;
+    }
+    rest.push(r);
+  }
+  return [accepted, rest, warnings];
+}
+
 // runs: one list of findings per finder run. Returns [merged, warnings].
 function merge(us, runs, mode = "agree") {
   const ids = new Set(us.filter((u) => !u.raw).map((u) => u.id));
+  const pos = new Map(us.map((u, k) => [u.id, k]));
   const warnings = [], rows = [];
   runs.forEach((run, n) => {
     const seen = new Set();
@@ -394,6 +483,16 @@ function merge(us, runs, mode = "agree") {
       if (typeof i !== "string" || !ids.has(i) || !ROUTES.includes(route)) {
         warnings.push(`run ${n + 1}: skipped ${pyRepr(i)} (route ${pyRepr(route)})`);
         continue;
+      }
+      if (route === "rewrite" && "join" in r) {
+        const [span, err] = joinError(r, us, pos);
+        if (err) {
+          warnings.push(`run ${n + 1}: ${err} ${i}`);
+          continue;
+        }
+        r = span ? { ...r, join: span } : withoutJoin(r);
+      } else if ("join" in r) {
+        r = withoutJoin(r);
       }
       const key = i + "\u0000" + route;
       if (seen.has(key)) continue;
@@ -407,7 +506,17 @@ function merge(us, runs, mode = "agree") {
   });
   const [aligned, w] = alignConflicts(rows);
   warnings.push(...w);
-  const merged = mode === "agree" ? mergeFindingsAgree(aligned, runs.length) : mergeFindings(aligned);
+  const [joins, rest, wj] = resolveJoins(aligned, mode, runs.length);
+  warnings.push(...wj);
+  const merged = mode === "agree" ? mergeFindingsAgree(rest, runs.length) : mergeFindings(rest);
+  // a join takes the place of its first sentence's row; that sentence's questions stay on it
+  for (const a of joins) {
+    const k = merged.findIndex((m) => m.id === a.id);
+    const head = k >= 0 ? merged[k] : null;
+    const asks = head && head.route === "ask" ? head.fix : "";
+    if (head) merged.splice(k, 1);
+    merged.push({ id: a.id, route: "rewrite", fix: get(a, "fix", ""), ask: asks, pattern: get(a, "pattern", ""), join: a.join });
+  }
   if (mode === "union" && runs.length > 1) {
     // a rewrite only one run proposed goes in, but the writer checks it: a single
     // run's rewrite is where new actions or events slipped in during tests
@@ -419,7 +528,10 @@ function merge(us, runs, mode = "agree") {
       }
     }
     for (const m of merged) {
-      if (m.route === "rewrite" && (editors.get(m.id)?.size ?? 0) === 1) {
+      const nEditors = m.join
+        ? new Set(aligned.filter((r) => r.route === "rewrite" && (m.join.includes(r.id) || overlaps(r.join, m.join))).map((r) => r.src)).size
+        : (editors.get(m.id)?.size ?? 0);
+      if (m.route === "rewrite" && nEditors === 1) {
         const head = [...strip(m.fix || "").replace(/^(#+|[-*+]|\p{Nd}+[.)])\s+/u, "")];
         const short = head.slice(0, 15).join("") + (head.length > 15 ? "…" : "");
         m.ask = (m.ask || "") + SINGLE_REWRITE_ASK(short);
@@ -428,6 +540,7 @@ function merge(us, runs, mode = "agree") {
   }
   // the bold check only speaks for sentences no finder run mentioned
   const mentioned = new Set(rows.map((r) => r.id));
+  for (const r of aligned) for (const j of r.join || []) mentioned.add(j);
   const all = merged.concat(boldFindings(us).filter((b) => !mentioned.has(b.id)));
   const order = new Map(us.map((u, k) => [u.id, k]));
   all.sort((a, b) => order.get(a.id) - order.get(b.id));
@@ -516,13 +629,19 @@ function addedWords(nw, origDoc, origNums) {
 // Returns [body, log]. us is changed in place.
 function assemble(us, merged) {
   const byId = new Map(us.map((u) => [u.id, u]));
-  const origDoc = us.map((u) => u.text).join("");
+  const pos = new Map(us.map((u, k) => [u.id, k]));
+  // the original to compare against: without an earlier round's confirmation list and marks
+  const box = us.find((u) => u.confirm) ?? null;
+  const origDoc = unmark(us.filter((u) => !u.confirm).map((u) => u.text).join(""));
   const origNums = new Set(findall(NUM, origDoc));
+  const firstNo = Math.max(0, ...us.flatMap((u) => [...u.text.matchAll(MARK_NO)].map((m) => parseInt(m[1], 10))));
   const before = new Map(us.map((u) => [u.id, u.text]));
   const changes = [], reverted = [], confirm = [], skipped = [];
+  const joined = new Set(); // sentences a join folded into the sentence before them
   for (const f of merged) {
     const u = byId.get(f.id);
-    if (!u || u.raw) {
+    let [span, err] = f.route === "rewrite" ? joinError(f, us, pos) : [null, null];
+    if (!u || u.raw || err || (joined.has(f.id) && f.route !== "ask")) {
       skipped.push(f.id);
       continue;
     }
@@ -545,14 +664,29 @@ function assemble(us, merged) {
       confirm.push({ id: f.id, ask: f.fix });
     } else {
       nw = strip(f.fix || "");
-      const hits = addedWords(nw, origDoc, origNums);
-      if (hits.length || !nw) {
-        reverted.push({ id: f.id, proposed: nw, words: hits.length ? hits : ["空の言い換え"] });
+      const bare = unmark(nw);
+      const hits = addedWords(bare, origDoc, origNums);
+      if (hits.length || !strip(bare)) {
+        // a join that is put back puts back every sentence in it
+        reverted.push({ id: f.id, proposed: nw, words: hits.length ? hits : ["空の言い換え"], ...(span ? { join: span } : {}) });
         nw = strip(old);
+        span = null;
       }
       if (f.ask) confirm.push({ id: f.id, ask: f.ask });
     }
     if (nw && prefix && !nw.startsWith(strip(prefix))) nw = prefix + nw;
+    if (f.route === "rewrite") nw = keepMarks((span || [f.id]).map((j) => byId.get(j).text), nw);
+    if (span) {
+      // the rest of the join goes as a deleted sentence does
+      const oldSpan = span.map((j) => byId.get(j).text).join("");
+      for (const j of span.slice(1)) {
+        byId.get(j).text = "";
+        joined.add(j);
+      }
+      u.text = lead + nw + trail;
+      changes.push({ id: f.id, route: f.route, result: "変えた", pattern: get(f, "pattern", ""), before: strip(oldSpan), after: strip(u.text), join: span });
+      continue;
+    }
     u.text = nw ? lead + nw + trail : "";
     if (u.text !== old) {
       changes.push({ id: f.id, route: f.route, result: "変えた", pattern: get(f, "pattern", ""), before: strip(old), after: strip(u.text) });
@@ -603,23 +737,35 @@ function assemble(us, merged) {
     c.questions = qs;
     unique.push(c);
   }
-  const dangling = danglingRefs(us, before);
-  const orphans = orphanParagraphs(us, before);
+  const dangling = danglingRefs(us, before, joined);
+  const orphans = orphanParagraphs(us, before, joined);
+  const lost = lostWords(us, before, joined, changes, dangling);
+  // numbers go on from the highest mark already in the text (an earlier round's)
   unique.forEach((c, k) => {
-    c.no = k + 1;
-    addMark(byId.get(c.at), `〔確認${k + 1}〕`);
+    c.no = firstNo + k + 1;
+    addMark(byId.get(c.at), `〔確認${c.no}〕`);
   });
+  const notes = dangling.map(danglingLine).concat(lost.map(lostLine), orphans.map(orphanLine));
+  const lines = unique.map(confirmLines).join("") + notes.join("");
+  // an earlier round's list takes the new lines at its end: one list, one heading
+  if (box !== null && lines) box.text += "\n" + stripChars(lines, "\n", false, true);
   let body = render(us);
-  const notes = dangling.map(danglingLine).concat(orphans.map(orphanLine));
-  if (unique.length || notes.length) {
-    body += "\n---\n\n## 確認欄\n\n" + unique.map(confirmLines).join("") + notes.join("");
-  }
+  if (box === null && lines) body += "\n---\n\n## 確認欄\n\n" + lines;
   const edited = changes.filter((c) => c.route !== "keep");
   const log = {
-    changes, reverted, confirm: unique, dangling, orphans,
-    skipped: skipped.filter((s) => s), unchanged_ids: before.size - edited.length,
+    changes, reverted, confirm: unique, dangling, lost, orphans,
+    skipped: skipped.filter((s) => s), unchanged_ids: before.size - edited.reduce((s, c) => s + (c.join ? c.join.length : 1), 0),
   };
   return [body, log];
+}
+
+// An earlier round's marks the rewrite left out go back; see keep_marks in japango.py.
+function keepMarks(olds, nw) {
+  const m = LEAD_MARKS.exec(strip(olds[0]));
+  const lead = m ? findall(MARK, m[0]) : [];
+  const front = lead.filter((x) => !nw.includes(x));
+  const back = findall(MARK, olds.join("")).filter((x) => !nw.includes(x) && !lead.includes(x));
+  return front.join("") + nw + back.join("");
 }
 
 // Put the mark right after the sentence's end mark, before any trailing spaces.
@@ -629,21 +775,18 @@ function addMark(u, mark) {
   u.text = t.slice(0, end) + mark + t.slice(end);
 }
 
-function deletedIds(us, before) {
-  return us.filter((u) => before.get(u.id) && strip(before.get(u.id)) && !u.text).map((u) => u.id);
+// a sentence a join folded away was rewritten, not deleted
+function deletedIds(us, before, joined = new Set()) {
+  return us.filter((u) => before.get(u.id) && strip(before.get(u.id)) && !u.text && !joined.has(u.id)).map((u) => u.id);
 }
 
 // Words that appear only in a deleted sentence, while a later remaining sentence
 // points at them; see dangling_refs in japango.py.
-function danglingRefs(us, before) {
+function danglingRefs(us, before, joined = new Set()) {
   const order = new Map(us.map((u, k) => [u.id, k]));
-  const remaining = us.map((u) => u.text).join("");
   const out = [];
-  for (const i of deletedIds(us, before)) {
-    const words = [];
-    for (const w of findall(NOUN, unbold(before.get(i)))) {
-      if (!remaining.includes(w) && !words.includes(w)) words.push(w);
-    }
+  for (const i of deletedIds(us, before, joined)) {
+    const words = onlyWords(us, before, i);
     if (!words.length) continue;
     for (const u of us.slice(order.get(i) + 1)) {
       if (!u.text || u.raw) continue;
@@ -662,19 +805,45 @@ function danglingLine(d) {
     `（${d.at} の「${d.ref}」が受けている。${d.deleted} を削った）\n`;
 }
 
+// Nouns of the deleted sentence i found nowhere in the remaining body.
+function onlyWords(us, before, i) {
+  const remaining = us.filter((u) => !u.confirm).map((u) => u.text).join("");
+  const words = [];
+  for (const w of findall(NOUN, unbold(unmark(before.get(i))))) {
+    if (!remaining.includes(w) && !words.includes(w)) words.push(w);
+  }
+  return words;
+}
+
+// Sentences deleted as a restatement (型 6) that held a word found nowhere else in
+// the body; see lost_words in japango.py.
+function lostWords(us, before, joined, changes, dangling = []) {
+  const restate = new Set(changes.filter((c) => c.route === "delete" && RESTATE.test(c.pattern || "")).map((c) => c.id));
+  const out = [];
+  for (const i of deletedIds(us, before, joined)) {
+    if (!restate.has(i)) continue;
+    const told = new Set(dangling.filter((d) => d.deleted === i).flatMap((d) => d.words));
+    const words = onlyWords(us, before, i).filter((w) => !told.has(w));
+    if (words.length) out.push({ deleted: i, words, text: strip(before.get(i)) });
+  }
+  return out;
+}
+
+const lostLine = (x) => `- 言い直しとして削った文にしか無い語: ${x.words.join("・")}（${x.deleted}「${x.text}」）\n`;
+
 // Prose paragraphs that had two or more sentences and keep exactly one after
 // deletions; see orphan_paragraphs in japango.py.
-function orphanParagraphs(us, before) {
+function orphanParagraphs(us, before, joined = new Set()) {
   const paras = new Map();
   for (const u of us) {
     if (!paras.has(u.para)) paras.set(u.para, []);
     paras.get(u.para).push(u);
   }
   const out = [];
-  if ([...paras.values()].filter((xs) => xs.some((x) => strip(x.text))).length < 2) return out;
+  if ([...paras.values()].filter((xs) => xs.some((x) => strip(x.text) && !x.confirm)).length < 2) return out;
   for (const [p, xs] of paras) {
     if (xs.some((x) => x.raw || BLOCK_START.test(lstrip(before.get(x.id))))) continue;
-    const had = xs.filter((x) => strip(before.get(x.id)));
+    const had = xs.filter((x) => strip(before.get(x.id)) && !joined.has(x.id));
     const left = xs.filter((x) => strip(x.text));
     if (had.length >= 2 && left.length === 1) {
       out.push({ para: p, id: left[0].id, text: strip(left[0].text), deleted: had.filter((x) => !strip(x.text)).map((x) => x.id) });
@@ -721,7 +890,7 @@ function cmdAssemble(unitsPath, mergedPath, logPath, outPath = null) {
   const kept = log.changes.filter((c) => c.route === "keep").length;
   console.log(dumps({
     changed: log.changes.length - kept, kept, reverted: log.reverted.length, confirm: log.confirm.length,
-    dangling: log.dangling.length, orphans: log.orphans.length, out: outPath,
+    dangling: log.dangling.length, lost: log.lost.length, orphans: log.orphans.length, out: outPath,
   }));
   return 0;
 }

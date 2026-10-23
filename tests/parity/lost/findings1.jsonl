@@ -1,0 +1,3 @@
+{"id": "p2-s2", "pattern": "型6 言い直しだけの文", "quote": "口座の残高を読む機能ではありません。", "effect": "前の文の言い直し", "route": "delete", "fix": ""}
+{"id": "p3-s1", "pattern": "型6 言い直しだけの文", "quote": "経理課と営業課が集計した。", "effect": "試験用", "route": "delete", "fix": ""}
+{"id": "p4-s2", "pattern": "型6 言い直しだけの文", "quote": "つまり、在庫を毎朝数え直したわけです。", "effect": "前の文の言い直し", "route": "delete", "fix": ""}

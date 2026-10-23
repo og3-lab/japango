@@ -20,6 +20,12 @@ Standard library only (Python 3.8+).
       When runs rewrite one ID toward different words, neither rewrite is used:
       the ID becomes an ask that names the words, since which one the writer
       meant is not in the text.
+      A rewrite may join sentences: "join" lists the IDs it replaces, the first
+      being "id", all in a row in one prose paragraph (not headings or list
+      items). A join is taken only when no run keeps a sentence in it; in agree
+      mode every other run must also edit a sentence in it. When joins overlap,
+      the first run's wins ("join span differs"); in union mode a join drops
+      the other edits inside it (with a warning).
 
   assemble UNITS MERGED LOG_JSON [--out OUT_MD]
       Write the revised text to <source stem>.japango.md next to the source
@@ -31,12 +37,19 @@ Standard library only (Python 3.8+).
       brings a cause, limit or time word, or a number, that the whole original
       never had is put back to the original. Questions are listed at the end;
       several questions on one sentence share one mark. keep rows are logged in
-      changes as 残した.
+      changes as 残した. A join puts its sentence where the first one was and
+      empties the rest; when it is put back, every sentence in it is.
       Two things are only reported, never fixed: a word that appears only in a
       deleted sentence while a later sentence still points at it (両課, この方式,
       同社 ...) goes to "dangling", and a prose paragraph left with one sentence
-      after deletions goes to "orphans". Both are listed at the end of the
-      confirmation list.
+      after deletions goes to "orphans". A sentence deleted as a restatement
+      (型 6) that held a word found nowhere else in the body goes to "lost".
+      All three are listed at the end of the confirmation list.
+      A second round (ids on an assembled text): its confirmation list is one
+      raw unit, left out of the added-fact check, and the new questions,
+      numbered on from the highest 〔確認n〕, go at its end. Marks are not part
+      of the original for the check; a rewrite keeps the marks it held, and a
+      join over a sentence that is only a mark is not taken ("join over mark").
 """
 import argparse
 import json
@@ -75,6 +88,19 @@ NOUN = re.compile(r"[\u4E00-\u9FFF々〆ヶァ-ヴー]{2,}")
 # a pointing word and the head noun right after it (両課, この方式, 同社, 前述の手順)
 POINTER = re.compile(r"(?:(?<![\u4E00-\u9FFF々])(?:両|同|当該|上記の?|前述の?|先の)|この|その|これらの|それらの)"
                      r"([\u4E00-\u9FFF々〆ヶァ-ヴー]{1,6})")
+
+# the mark assemble puts after a sentence, and the confirmation list it writes at the
+# end: "---", a blank line, "## 確認欄", a blank line, then only lines of the forms
+# confirm_lines, dangling_line and orphan_line write
+MARK = re.compile(r"〔確認[0-9]+〕")
+MARK_NO = re.compile(r"〔確認([0-9]+)〕")
+LEAD_MARKS = re.compile(r"(?:〔確認[0-9]+〕)+")
+CONFIRM_HEAD = "---\n\n## 確認欄\n\n"
+CONFIRM_ITEM = re.compile(r"(?:- 〔確認[0-9]+〕|  - |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: "
+                          r"|- 言い直しとして削った文にしか無い語: )")
+# a deletion as a restatement (型 6) says the sentence adds nothing; a word found
+# nowhere else in the body says otherwise
+RESTATE = re.compile(r"^\s*型\s*6(?![0-9a-z])")
 
 
 # ---------- files ----------
@@ -166,11 +192,32 @@ def sentences(para):
     return out
 
 
+def split_confirm(body):
+    """(body before the confirmation list, the list) when the body ends with a list
+    in the form assemble writes; (body, None) otherwise."""
+    k = body.rfind("\n\n" + CONFIRM_HEAD)
+    if k != -1:
+        start = k + 2
+    elif body.startswith(CONFIRM_HEAD):
+        k = start = 0
+    else:
+        return body, None
+    tail = body[start:].rstrip("\n")
+    items = tail.split("\n")[4:]
+    if not items or not all(CONFIRM_ITEM.match(l) for l in items):
+        return body, None
+    return body[:k], tail
+
+
 def units(text):
     """Units of the body. Each has id, text, para, line (one unit per line)
-    and raw (kept as is, not shown to the finder)."""
+    and raw (kept as is, not shown to the finder). A confirmation list that an
+    earlier assemble wrote at the end is one raw unit with confirm, so a second
+    round neither splits it nor reads it as text."""
     out = []
-    for pi, (gap, lines, code) in enumerate(blocks_of(split_front(text)[1]), 1):
+    body, box = split_confirm(split_front(text)[1])
+    blocks = blocks_of(body)
+    for pi, (gap, lines, code) in enumerate(blocks, 1):
         base = {"para": pi, "gap": gap}
         if code or is_raw(lines):
             out.append(dict(base, id=f"p{pi}-s1", text="\n".join(lines), line=True, raw=True))
@@ -182,6 +229,10 @@ def units(text):
         # keep each sentence's leading spaces so rendering restores the original
         for si, s in enumerate(sentences(lines[0]), 1):
             out.append(dict(base, id=f"p{pi}-s{si}", text=s, line=False))
+    if box is not None:
+        pi = len(blocks) + 1
+        out.append({"para": pi, "gap": "\n\n" if blocks else "\n", "id": f"p{pi}-s1", "text": box,
+                    "line": True, "raw": True, "confirm": True})
     return out
 
 
@@ -337,9 +388,74 @@ def bold_findings(us):
     return out
 
 
+def join_error(r, us, pos):
+    """(span, error) for a rewrite's "join". span is None when it joins nothing
+    (no join, [], or just its own ID). A join must list IDs in a row, starting at
+    "id", inside one prose paragraph."""
+    j = r.get("join")
+    if j is None or j == [] or j == [r.get("id")]:
+        return None, None
+    if (not isinstance(j, list) or len(j) < 2 or j[0] != r.get("id")
+            or not all(isinstance(x, str) and x in pos for x in j)):
+        return None, "join not contiguous"
+    ks = [pos[x] for x in j]
+    xs = [us[k] for k in ks]
+    if ks != list(range(ks[0], ks[0] + len(ks))) or len({x["para"] for x in xs}) > 1:
+        return None, "join not contiguous"
+    if any(x.get("raw") or x.get("line") for x in xs):
+        return None, "join over lines"
+    # a sentence that is only an earlier round's 〔確認n〕 mark: joined, the mark would go
+    if any(MARK.search(x["text"]) and not MARK.sub("", x["text"]).strip() for x in xs):
+        return None, "join over mark"
+    return list(j), None
+
+
+def resolve_joins(rows, mode, runs):
+    """Pick the joins to use. Returns (accepted joins, the other rows, warnings).
+    A join is dropped when a run keeps a sentence in it, and in agree mode when
+    some other run edits nothing in it. Overlapping joins: the first run's wins.
+    Edits of the sentences inside an accepted join are dropped."""
+    warnings, accepted = [], []
+    kept = {r["id"] for r in rows if r["route"] == "keep"}
+
+    def touches(x, span):
+        return x["id"] in span or bool(set(x.get("join") or ()) & set(span))
+
+    for r in sorted((r for r in rows if r.get("join")), key=lambda r: r["src"]):
+        span = r["join"]
+        clash = next((a for a in accepted if set(a["join"]) & set(span)), None)
+        if clash:
+            if clash["join"] != span:
+                warnings.append(f"run {r['src'] + 1}: join span differs {r['id']}")
+            continue
+        if kept & set(span):
+            warnings.append(f"run {r['src'] + 1}: join kept {r['id']}")
+            continue
+        if mode == "agree":
+            editors = {x["src"] for x in rows if x["route"] in EDIT_ROUTES and touches(x, span)}
+            if len(editors) < runs:
+                continue
+        accepted.append(r)
+    inside = {}
+    for a in accepted:
+        for j in a["join"]:
+            inside[j] = a["id"]
+    rest = []
+    for r in rows:
+        if r.get("join"):
+            continue
+        if r["route"] in EDIT_ROUTES and r["id"] in inside:
+            if mode == "union":
+                warnings.append(f"run {r['src'] + 1}: join {inside[r['id']]} drops {r['route']} {r['id']}")
+            continue
+        rest.append(r)
+    return accepted, rest, warnings
+
+
 def merge(us, runs, mode="agree"):
     """runs: one list of findings per finder run. Returns (merged, warnings)."""
     ids = {u["id"] for u in us if not u.get("raw")}
+    pos = {u["id"]: k for k, u in enumerate(us)}
     warnings, rows = [], []
     for n, run in enumerate(runs):
         seen = set()
@@ -348,6 +464,14 @@ def merge(us, runs, mode="agree"):
             if i not in ids or route not in ROUTES:
                 warnings.append(f"run {n + 1}: skipped {i!r} (route {route!r})")
                 continue
+            if route == "rewrite" and "join" in r:
+                span, err = join_error(r, us, pos)
+                if err:
+                    warnings.append(f"run {n + 1}: {err} {i}")
+                    continue
+                r = dict(r, join=span) if span else {k: v for k, v in r.items() if k != "join"}
+            elif "join" in r:
+                r = {k: v for k, v in r.items() if k != "join"}
             if (i, route) in seen:
                 continue
             seen.add((i, route))
@@ -358,7 +482,17 @@ def merge(us, runs, mode="agree"):
             rows.append(dict(r, src=n))
     rows, w = align_conflicts(rows)
     warnings += w
-    merged = merge_findings_agree(rows, len(runs)) if mode == "agree" else merge_findings(rows)
+    joins, rest, w = resolve_joins(rows, mode, len(runs))
+    warnings += w
+    merged = merge_findings_agree(rest, len(runs)) if mode == "agree" else merge_findings(rest)
+    # a join takes the place of its first sentence's row; that sentence's questions stay on it
+    for a in joins:
+        head = next((m for m in merged if m["id"] == a["id"]), None)
+        asks = head["fix"] if head and head["route"] == "ask" else ""
+        if head:
+            merged.remove(head)
+        merged.append({"id": a["id"], "route": "rewrite", "fix": a.get("fix", ""), "ask": asks,
+                       "pattern": a.get("pattern", ""), "join": a["join"]})
     if mode == "union" and len(runs) > 1:
         # a rewrite only one run proposed goes in, but the writer checks it: a single
         # run's rewrite is where new actions or events slipped in during tests
@@ -367,12 +501,19 @@ def merge(us, runs, mode="agree"):
             if r["route"] == "rewrite":
                 editors.setdefault(r["id"], set()).add(r["src"])
         for m in merged:
-            if m["route"] == "rewrite" and len(editors.get(m["id"], ())) == 1:
+            if m.get("join"):
+                n_editors = len({r["src"] for r in rows if r["route"] == "rewrite" and (
+                    r["id"] in m["join"] or set(r.get("join") or ()) & set(m["join"]))})
+            else:
+                n_editors = len(editors.get(m["id"], ()))
+            if m["route"] == "rewrite" and n_editors == 1:
                 head = re.sub(r"^(#+|[-*+]|\d+[.)])\s+", "", (m.get("fix") or "").strip())
                 head = head[:15] + ("…" if len(head) > 15 else "")
                 m["ask"] = (m.get("ask") or "") + SINGLE_REWRITE_ASK.format(head=head)
     # the bold check only speaks for sentences no finder run mentioned
     mentioned = {r["id"] for r in rows}
+    for r in rows:
+        mentioned.update(r.get("join") or ())
     merged += [b for b in bold_findings(us) if b["id"] not in mentioned]
     order = {u["id"]: k for k, u in enumerate(us)}
     merged.sort(key=lambda r: order[r["id"]])
@@ -457,13 +598,20 @@ def added_words(new, orig_doc, orig_nums):
 def assemble(us, merged):
     """Returns (body, log). us is changed in place."""
     by_id = {u["id"]: u for u in us}
-    orig_doc = "".join(u["text"] for u in us)
+    pos = {u["id"]: k for k, u in enumerate(us)}
+    # the original to compare against: the body without an earlier round's
+    # confirmation list and 〔確認n〕 marks, whose words are not the writer's text
+    box = next((u for u in us if u.get("confirm")), None)
+    orig_doc = MARK.sub("", "".join(u["text"] for u in us if not u.get("confirm")))
     orig_nums = set(NUM.findall(orig_doc))
+    first_no = max((int(n) for u in us for n in MARK_NO.findall(u["text"])), default=0)
     before = {u["id"]: u["text"] for u in us}
     changes, reverted, confirm, skipped = [], [], [], []
+    joined = set()  # sentences a join folded into the sentence before them
     for f in merged:
         u = by_id.get(f.get("id"))
-        if not u or u.get("raw"):
+        span, err = join_error(f, us, pos) if f.get("route") == "rewrite" else (None, None)
+        if not u or u.get("raw") or err or (f["id"] in joined and f["route"] != "ask"):
             skipped.append(f.get("id"))
             continue
         old = u["text"]
@@ -485,14 +633,30 @@ def assemble(us, merged):
             confirm.append({"id": f["id"], "ask": f["fix"]})
         else:
             new = (f.get("fix") or "").strip()
-            hits = added_words(new, orig_doc, orig_nums)
-            if hits or not new:
-                reverted.append({"id": f["id"], "proposed": new, "words": hits or ["空の言い換え"]})
-                new = old.strip()
+            bare = MARK.sub("", new)
+            hits = added_words(bare, orig_doc, orig_nums)
+            if hits or not bare.strip():
+                # a join that is put back puts back every sentence in it
+                reverted.append(dict({"id": f["id"], "proposed": new, "words": hits or ["空の言い換え"]},
+                                     **({"join": span} if span else {})))
+                new, span = old.strip(), None
             if f.get("ask"):
                 confirm.append({"id": f["id"], "ask": f["ask"]})
         if new and prefix and not new.startswith(prefix.strip()):
             new = prefix + new
+        if f["route"] == "rewrite":
+            new = keep_marks([by_id[j]["text"] for j in span or [f["id"]]], new)
+        if span:
+            # the rest of the join goes as a deleted sentence does
+            old_span = "".join(by_id[j]["text"] for j in span)
+            for j in span[1:]:
+                by_id[j]["text"] = ""
+                joined.add(j)
+            u["text"] = lead + new + trail
+            changes.append({"id": f["id"], "route": f["route"], "result": "変えた",
+                            "pattern": f.get("pattern", ""),
+                            "before": old_span.strip(), "after": u["text"].strip(), "join": span})
+            continue
         u["text"] = (lead + new + trail) if new else ""
         if u["text"] != old:
             changes.append({"id": f["id"], "route": f["route"], "result": "変えた",
@@ -543,20 +707,38 @@ def assemble(us, merged):
         seen.update(qs)
         c["questions"] = qs
         unique.append(c)
-    dangling = dangling_refs(us, before)
-    orphans = orphan_paragraphs(us, before)
-    for n, c in enumerate(unique, 1):
+    dangling = dangling_refs(us, before, joined)
+    orphans = orphan_paragraphs(us, before, joined)
+    lost = lost_words(us, before, joined, changes, dangling)
+    # numbers go on from the highest mark already in the text (an earlier round's)
+    for n, c in enumerate(unique, first_no + 1):
         c["no"] = n
         add_mark(by_id[c["at"]], f"〔確認{n}〕")
+    notes = ([dangling_line(d) for d in dangling] + [lost_line(x) for x in lost]
+             + [orphan_line(o) for o in orphans])
+    lines = "".join(confirm_lines(c) for c in unique) + "".join(notes)
+    if box is not None and lines:
+        # an earlier round's list takes the new lines at its end: one list, one heading
+        box["text"] += "\n" + lines.rstrip("\n")
     body = render(us)
-    notes = [dangling_line(d) for d in dangling] + [orphan_line(o) for o in orphans]
-    if unique or notes:
-        body += "\n---\n\n## 確認欄\n\n" + "".join(confirm_lines(c) for c in unique) + "".join(notes)
+    if box is None and lines:
+        body += "\n---\n\n## 確認欄\n\n" + lines
     edited = [c for c in changes if c["route"] != "keep"]
     log = {"changes": changes, "reverted": reverted, "confirm": unique,
-           "dangling": dangling, "orphans": orphans,
-           "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - len(edited)}
+           "dangling": dangling, "lost": lost, "orphans": orphans,
+           "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - sum(len(c.get("join") or [c]) for c in edited)}
     return body, log
+
+
+def keep_marks(olds, new):
+    """An earlier round's 〔確認n〕 marks in the replaced sentences that the rewrite
+    left out go back: marks at the start of the first sentence (they belong to the
+    sentence before it) in front, the others at the end."""
+    m = LEAD_MARKS.match(olds[0].strip())
+    lead = MARK.findall(m.group(0)) if m else []
+    front = [x for x in lead if x not in new]
+    back = [x for x in MARK.findall("".join(olds)) if x not in new and x not in lead]
+    return "".join(front) + new + "".join(back)
 
 
 def add_mark(u, mark):
@@ -568,11 +750,13 @@ def add_mark(u, mark):
     u["text"] = t[:end] + mark + t[end:]
 
 
-def deleted_ids(us, before):
-    return [u["id"] for u in us if before.get(u["id"]) and before[u["id"]].strip() and not u["text"]]
+def deleted_ids(us, before, joined=()):
+    """Sentences that were deleted (a sentence a join folded away was rewritten, not deleted)."""
+    return [u["id"] for u in us if before.get(u["id"]) and before[u["id"]].strip() and not u["text"]
+            and u["id"] not in joined]
 
 
-def dangling_refs(us, before):
+def dangling_refs(us, before, joined=()):
     """Words that appear only in a deleted sentence, while a later remaining sentence
     points at them (両課 -> 経理課・営業課, この方式 -> 新方式). Reported, not fixed.
 
@@ -580,13 +764,9 @@ def dangling_refs(us, before):
     body; it is reported when a pointing word's head noun in a later remaining sentence
     is part of the word (課 in 経理課, 方式 in 新方式)."""
     order = {u["id"]: k for k, u in enumerate(us)}
-    remaining = "".join(u["text"] for u in us)
     out = []
-    for i in deleted_ids(us, before):
-        words = []
-        for w in NOUN.findall(unbold(before[i])):
-            if w not in remaining and w not in words:
-                words.append(w)
+    for i in deleted_ids(us, before, joined):
+        words = only_words(us, before, i)
         if not words:
             continue
         for u in us[order[i] + 1:]:
@@ -607,7 +787,37 @@ def dangling_line(d):
             f"（{d['at']} の「{d['ref']}」が受けている。{d['deleted']} を削った）\n")
 
 
-def orphan_paragraphs(us, before):
+def only_words(us, before, i):
+    """Nouns of the deleted sentence i found nowhere in the remaining body."""
+    remaining = "".join(u["text"] for u in us if not u.get("confirm"))
+    words = []
+    for w in NOUN.findall(unbold(MARK.sub("", before[i]))):
+        if w not in remaining and w not in words:
+            words.append(w)
+    return words
+
+
+def lost_words(us, before, joined, changes, dangling=()):
+    """Sentences deleted as a restatement (型 6) that held a word found nowhere else
+    in the body (残高 in 口座の残高を読む機能ではありません): the sentence was not only a
+    restatement. Words already reported as dangling are left out. Reported, not put back."""
+    restate = {c["id"] for c in changes if c["route"] == "delete" and RESTATE.match(c.get("pattern", ""))}
+    out = []
+    for i in deleted_ids(us, before, joined):
+        if i not in restate:
+            continue
+        told = {w for d in dangling if d["deleted"] == i for w in d["words"]}
+        words = [w for w in only_words(us, before, i) if w not in told]
+        if words:
+            out.append({"deleted": i, "words": words, "text": before[i].strip()})
+    return out
+
+
+def lost_line(x):
+    return f"- 言い直しとして削った文にしか無い語: {'・'.join(x['words'])}（{x['deleted']}「{x['text']}」）\n"
+
+
+def orphan_paragraphs(us, before, joined=()):
     """Prose paragraphs that had two or more sentences and keep exactly one after
     deletions. Lists, headings, quotes, tables and code are not prose paragraphs.
     A text that is down to one paragraph has no neighbours to float among, so
@@ -616,12 +826,12 @@ def orphan_paragraphs(us, before):
     for u in us:
         paras.setdefault(u["para"], []).append(u)
     out = []
-    if sum(1 for xs in paras.values() if any(x["text"].strip() for x in xs)) < 2:
+    if sum(1 for xs in paras.values() if any(x["text"].strip() and not x.get("confirm") for x in xs)) < 2:
         return out
     for p, xs in paras.items():
         if any(x.get("raw") or BLOCK_START.match(before[x["id"]].lstrip()) for x in xs):
             continue
-        had = [x for x in xs if before[x["id"]].strip()]
+        had = [x for x in xs if before[x["id"]].strip() and x["id"] not in joined]
         left = [x for x in xs if x["text"].strip()]
         if len(had) >= 2 and len(left) == 1:
             out.append({"para": p, "id": left[0]["id"], "text": left[0]["text"].strip(),
@@ -671,7 +881,7 @@ def cmd_assemble(units_path, merged_path, log_path, out_path=None):
     kept = sum(1 for c in log["changes"] if c["route"] == "keep")
     print(json.dumps({"changed": len(log["changes"]) - kept, "kept": kept,
                       "reverted": len(log["reverted"]), "confirm": len(log["confirm"]),
-                      "dangling": len(log["dangling"]), "orphans": len(log["orphans"]),
+                      "dangling": len(log["dangling"]), "lost": len(log["lost"]), "orphans": len(log["orphans"]),
                       "out": str(out_path)}, ensure_ascii=False))
     return 0
 

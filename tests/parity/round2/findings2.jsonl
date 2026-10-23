@@ -1,0 +1,5 @@
+{"id": "p2-s1", "pattern": "型28 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "両課の担当は2人です。"}
+{"id": "p3-s2", "pattern": "型28 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "返事は翌日に送り、急ぎは当日です。", "join": ["p3-s2", "p3-s3"]}
+{"id": "p5-s1", "pattern": "型28 文末の単調", "quote": "", "effect": "", "route": "rewrite", "fix": "受付の記録は、休みのため課長が見ます。"}
+{"id": "p5-s2", "pattern": "型12", "quote": "", "effect": "", "route": "delete", "fix": ""}
+{"id": "p5-s3", "pattern": "型12", "quote": "", "effect": "", "route": "delete", "fix": ""}

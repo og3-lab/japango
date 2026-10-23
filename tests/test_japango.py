@@ -427,6 +427,32 @@ class Reports(unittest.TestCase):
         _, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
         self.assertEqual(log["dangling"], [])
 
+    def test_restatement_deletion_with_new_word_reported(self):
+        text = "つけるんは、口座とはつなぎません。口座の残高を読む機能ではありません。読むのはレシートだけです。\n"
+        body, log = self.build(text, [{"id": "p1-s2", "route": "delete", "pattern": "型6 言い直しだけの文"}])
+        self.assertEqual(log["lost"], [{"deleted": "p1-s2", "words": ["残高", "機能"],
+                                        "text": "口座の残高を読む機能ではありません。"}])
+        self.assertTrue(body.rstrip("\n").endswith(
+            "- 言い直しとして削った文にしか無い語: 残高・機能（p1-s2「口座の残高を読む機能ではありません。」）"))
+        # the sentence stays deleted: reported, not put back
+        self.assertTrue(body.startswith("つけるんは、口座とはつなぎません。読むのはレシートだけです。\n"))
+
+    def test_restatement_check_only_for_type6_and_new_words(self):
+        text = "経理課が集計した。経理課が集計を終えた。結果は翌日に出た。\n"
+        # every word of the deleted sentence is still in the body
+        _, log = self.build(text, [{"id": "p1-s2", "route": "delete", "pattern": "型6 言い直しだけの文"}])
+        self.assertEqual(log["lost"], [])
+        # a closing line (型 6a is another type) is not a restatement
+        text = "経理課が集計した。きっと大きな成果になるはずだ。\n"
+        for pattern in ("型10 締めの一文", "型6a 接続語", ""):
+            _, log = self.build(text, [{"id": "p1-s2", "route": "delete", "pattern": pattern}])
+            self.assertEqual(log["lost"], [])
+        # words already reported as dangling are not listed twice
+        text = "経理課と営業課が集計した。両課は翌日に集計を報告した。\n"
+        _, log = self.build(text, [{"id": "p1-s1", "route": "delete", "pattern": "型6"}])
+        self.assertEqual(len(log["dangling"]), 1)
+        self.assertEqual(log["lost"], [])
+
     def test_orphan_paragraph_reported(self):
         text = "一つ目の文。二つ目の文。\n\n三つ目。四つ目。五つ目。\n\n- 項目一。\n- 項目二。\n"
         body, log = self.build(text, [{"id": "p1-s2", "route": "delete"}, {"id": "p2-s1", "route": "delete"},
@@ -445,6 +471,166 @@ class Reports(unittest.TestCase):
         self.assertEqual(lines[0], "- 〔確認1〕誰が決めたか")
         self.assertTrue(lines[1].startswith("- 削った文が指していた語が残っていません: 経理課・営業課"))
         self.assertEqual(lines[2], "- 1 文だけ残った段落: 〔両課は翌日に報告した。〕（p1-s2）")
+
+
+class Join(unittest.TestCase):
+    TEXT = ("今は、ほとんどがボットから入ります。電話で頼む人も、まだ週に数人います。\n\n"
+            "窓口は朝九時に開きます。担当は二人です。昼は一人になります。\n\n"
+            "- 項目の一つ目です。\n- 項目の二つ目です。\n")
+    FIX = "今は、ほとんどがボットから入りますが、電話で頼む人もまだ週に数人います。"
+
+    def join(self, i, span, fix):
+        return {"id": i, "route": "rewrite", "fix": fix, "join": span}
+
+    def run_merge(self, runs, mode="agree"):
+        us = jp.units(self.TEXT)
+        merged, warnings = jp.merge(us, runs, mode)
+        body, log = jp.assemble(jp.units(self.TEXT), merged)
+        return merged, warnings, body, log
+
+    def test_join_replaces_first_and_empties_rest(self):
+        j = self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX)
+        merged, warnings, body, log = self.run_merge([[j], [j]])
+        self.assertEqual(warnings, [])
+        self.assertEqual(merged[0]["join"], ["p1-s1", "p1-s2"])
+        self.assertTrue(body.startswith(self.FIX + "\n\n窓口は"))
+        self.assertEqual(log["changes"][0]["join"], ["p1-s1", "p1-s2"])
+        self.assertEqual(log["changes"][0]["before"], "今は、ほとんどがボットから入ります。電話で頼む人も、まだ週に数人います。")
+        # joining is not deleting: no lone-sentence paragraph, no dangling word
+        self.assertEqual(log["orphans"], [])
+        self.assertEqual(log["unchanged_ids"], len(jp.units(self.TEXT)) - 2)
+
+    def test_join_must_be_contiguous_in_one_prose_paragraph(self):
+        runs = [[self.join("p2-s1", ["p2-s1", "p2-s3"], "窓口は朝九時に開き、昼は一人になります。"),
+                 self.join("p1-s2", ["p1-s2", "p2-s1"], "電話で頼む人もいて、窓口は朝九時に開きます。"),
+                 self.join("p3-s1", ["p3-s1", "p3-s2"], "- 項目の一つ目と二つ目です。")]]
+        merged, warnings, body, _ = self.run_merge(runs, "union")
+        self.assertEqual(merged, [])
+        self.assertEqual(warnings, ["run 1: join not contiguous p2-s1", "run 1: join not contiguous p1-s2",
+                                    "run 1: join over lines p3-s1"])
+        self.assertEqual(body, self.TEXT)
+
+    def test_agree_needs_the_other_run_to_edit_the_span(self):
+        j = self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX)
+        merged, _, _, _ = self.run_merge([[j], []])
+        self.assertEqual(merged, [])
+        other = {"id": "p1-s2", "route": "delete"}
+        merged, _, body, _ = self.run_merge([[j], [other]])
+        self.assertEqual([(m["id"], m.get("join")) for m in merged], [("p1-s1", ["p1-s1", "p1-s2"])])
+        self.assertTrue(body.startswith(self.FIX + "\n"))
+        # union takes it, and asks since one run proposed it
+        merged, _, _, _ = self.run_merge([[j], []], "union")
+        self.assertIn("書き直しで", merged[0]["ask"])
+
+    def test_keep_in_span_drops_join(self):
+        j = self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX)
+        keep = {"id": "p1-s2", "route": "keep"}
+        for mode in ("agree", "union"):
+            merged, warnings, body, _ = self.run_merge([[j], [keep]], mode)
+            self.assertEqual([m["route"] for m in merged], ["keep"], mode)
+            self.assertEqual(warnings, ["run 1: join kept p1-s1"], mode)
+            self.assertEqual(body, self.TEXT, mode)
+
+    def test_span_differs_takes_first_run(self):
+        a = self.join("p2-s2", ["p2-s2", "p2-s3"], "担当は二人で、昼は一人になります。")
+        b = self.join("p2-s1", ["p2-s1", "p2-s2"], "窓口は朝九時に開き、担当は二人です。")
+        merged, warnings, body, _ = self.run_merge([[a], [b]])
+        self.assertEqual([m["id"] for m in merged], ["p2-s2"])
+        self.assertEqual(warnings, ["run 2: join span differs p2-s1"])
+        self.assertIn("窓口は朝九時に開きます。担当は二人で、昼は一人になります。\n", body)
+
+    def test_union_join_drops_edits_inside(self):
+        j = self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX)
+        rs = [{"id": "p1-s2", "route": "rewrite", "fix": "電話の人もいます。"},
+              {"id": "p1-s2", "route": "ask", "fix": "〔誰が電話で頼むか〕"}]
+        merged, warnings, body, _ = self.run_merge([[j], rs], "union")
+        self.assertEqual(warnings, ["run 2: join p1-s1 drops rewrite p1-s2"])
+        self.assertEqual([(m["id"], m["route"]) for m in merged], [("p1-s1", "rewrite"), ("p1-s2", "ask")])
+        # the question about the folded sentence is marked on the joined one
+        self.assertTrue(body.startswith(self.FIX + "〔確認1〕\n"))
+
+    def test_added_fact_puts_back_every_sentence(self):
+        j = self.join("p1-s1", ["p1-s1", "p1-s2"], "ボットが増えたため、電話で頼む人は週に3人です。")
+        _, _, body, log = self.run_merge([[j], [j]])
+        self.assertEqual(body, self.TEXT)
+        self.assertEqual(log["reverted"][0]["join"], ["p1-s1", "p1-s2"])
+        self.assertEqual(log["reverted"][0]["words"], ["ため", "3"])
+        self.assertEqual(log["changes"], [])
+
+
+class SecondRound(unittest.TestCase):
+    """ids, merge and assemble run again on a text assemble wrote (the reader's round)."""
+    TEXT = "窓口は朝九時に開きます。担当は二人です。\n\n昼は一人になります。返事は翌日に送ります。急ぎは当日です。\n"
+    ROUND1 = [{"id": "p1-s1", "route": "ask", "fix": "〔二人にしたのは何のためか〕"},
+              {"id": "p1-s2", "route": "ask", "fix": "〔誰が決めたか〕"}]
+
+    def first(self):
+        us = jp.units(self.TEXT)
+        merged, _ = jp.merge(us, [self.ROUND1])
+        return jp.assemble(us, merged)[0]
+
+    def second(self, runs, mode="agree"):
+        text = self.first()
+        merged, warnings = jp.merge(jp.units(text), runs, mode)
+        body, log = jp.assemble(jp.units(text), merged)
+        return merged, warnings, body, log
+
+    def test_confirmation_list_is_one_raw_unit(self):
+        text = self.first()
+        us = jp.units(text)
+        box = us[-1]
+        self.assertTrue(box["raw"] and box["confirm"])
+        self.assertEqual(box["text"], "---\n\n## 確認欄\n\n- 〔確認1〕二人にしたのは何のためか\n- 〔確認2〕誰が決めたか")
+        self.assertEqual(jp.render(us), jp.expected_body(text))
+        # the finder sees neither the list nor its heading
+        self.assertNotIn("確認欄", "".join(u["text"] for u in us if not u.get("raw")))
+        # marks stay in the sentences: one leads the next sentence, one is a sentence of its own
+        self.assertEqual([u["text"] for u in us if u["para"] == 1],
+                         ["窓口は朝九時に開きます。", "〔確認1〕担当は二人です。", "〔確認2〕"])
+
+    def test_list_not_in_assemble_form_is_split_as_before(self):
+        text = self.first().replace("- 〔確認2〕誰が決めたか", "誰が決めたか")
+        self.assertFalse(any(u.get("confirm") for u in jp.units(text)))
+
+    def test_second_questions_go_on_from_the_first_list(self):
+        ask = {"id": "p2-s2", "route": "ask", "fix": "〔決まりの説明か、実際にあった出来事か〕"}
+        _, _, body, log = self.second([[ask]])
+        self.assertEqual(body.count("## 確認欄"), 1)
+        self.assertIn("返事は翌日に送ります。〔確認3〕急ぎは当日です。", body)
+        self.assertTrue(body.endswith("## 確認欄\n\n- 〔確認1〕二人にしたのは何のためか\n- 〔確認2〕誰が決めたか\n"
+                                      "- 〔確認3〕決まりの説明か、実際にあった出来事か\n"))
+        self.assertEqual([c["no"] for c in log["confirm"]], [3])
+
+    def test_notes_go_to_the_same_list(self):
+        _, _, body, log = self.second([[{"id": "p2-s3", "route": "delete"}, {"id": "p2-s2", "route": "delete"}]])
+        self.assertEqual(body.count("## 確認欄"), 1)
+        self.assertTrue(body.endswith("- 〔確認2〕誰が決めたか\n- 1 文だけ残った段落: 〔昼は一人になります。〕（p2-s1）\n"))
+
+    def test_join_over_a_mark_is_not_taken(self):
+        j = {"id": "p1-s2", "route": "rewrite", "fix": "担当は二人です。", "join": ["p1-s2", "p1-s3"]}
+        for mode in ("agree", "union"):
+            merged, warnings, body, _ = self.second([[j]], mode)
+            self.assertEqual(merged, [], mode)
+            self.assertEqual(warnings, ["run 1: join over mark p1-s2"], mode)
+            self.assertEqual(body, self.first(), mode)
+
+    def test_rewrite_keeps_its_marks(self):
+        j = {"id": "p1-s1", "route": "rewrite", "fix": "窓口は朝九時に開き、担当は二人です。", "join": ["p1-s1", "p1-s2"]}
+        _, warnings, body, log = self.second([[j]])
+        self.assertEqual(warnings, [])
+        # 〔確認1〕 belonged to the first sentence; it stays at the end of the joined one
+        self.assertTrue(body.startswith("窓口は朝九時に開き、担当は二人です。〔確認1〕〔確認2〕\n\n"))
+        r = {"id": "p1-s2", "route": "rewrite", "fix": "担当は二人。"}
+        _, _, body, _ = self.second([[r]])
+        self.assertTrue(body.startswith("窓口は朝九時に開きます。〔確認1〕担当は二人。〔確認2〕\n\n"))
+
+    def test_words_of_the_list_and_marks_are_not_the_original(self):
+        # 「ため」 is only in the first round's question, 「1」 only in its marks
+        for fix, words in (("昼は休憩のため一人になります。", ["ため"]), ("昼は1人になります。", ["1"])):
+            r = {"id": "p2-s1", "route": "rewrite", "fix": fix}
+            _, _, body, log = self.second([[r]])
+            self.assertEqual(log["reverted"][0]["words"], words, fix)
+            self.assertEqual(body, self.first(), fix)
 
 
 if __name__ == "__main__":
