@@ -20,28 +20,18 @@ const SENT = /[^。！？]*[。！？](?:\*\*|[」』）)])*|[^。！？]+$/gu;
 const BLOCK_START = /^(#{1,6} |[-*+] |\p{Nd}+[.)] |> )/u;
 const FENCE = /^\s*(```|~~~)/u;
 
-const ROUTES = ["delete", "rewrite", "ask", "keep"];
+const ROUTES = ["delete", "rewrite", "keep"];
 const EDIT_ROUTES = ["rewrite", "delete"];
 // types whose rewrite aligns a word with the rest of the text (呼び名・人の呼び名・動詞)
 const ALIGN_TYPES = /型\s*21[de]?(?![0-9a-z])/u;
-const ALIGN_ASK = (words) => `〔${words}のどれにそろえるか〕`;
-const ALIGN_ASK1 = (word) => `〔「${word}」とほかの回の言い方のどちらにそろえるか〕`;
-// a line that is only a URL: a mark after it would become part of the link
-const URL_LINE = /^<?https?:\/\/\S+>?$/u;
+// runs that align one sentence toward different words; see ALIGN_READING in japango.py
+const ALIGN_READING = (words) => `そろえる語が回で分かれた（${words}）。先の回の言い方で直した`;
 
 // words that state a cause or a limit, and words that bound a time
 const ADDED_MARKERS = ["だけ", "のみ", "紛れ", "ため", "により", "によって", "原因", "せいで"];
-const SINGLE_REWRITE_ASK = (head) => `〔「${head}」の書き直しで、原文に無い行動・出来事が増えていないか〕`;
-// the questions merge adds by itself; see AUTO_ASK in japango.py
-const AUTO_ASK = /^(?:「.*」の書き直しで、原文に無い行動・出来事が増えていないか|(?:「[^」]*」・)+「[^」]*」のどれにそろえるか|「[^」]*」とほかの回の言い方のどちらにそろえるか)$/u;
 const TIME_MARKERS = ["まで", "以降", "以前", "までに"];
 const NUM = /\p{Nd}+(?:\.\p{Nd}+)?/gu;
 const BOLD = /\*\*(.+?)\*\*/gu;
-
-// questions about deadlines or owners of future work are not what the text is missing;
-// keep questions about who decided, why, and what caused it
-const ASK_KEEP = /誰|なぜ|理由|根拠|原因|どの|何を|出典/u;
-const ASK_DROP = /いつまで|期限|期日|予定/u;
 
 // nouns for the dangling-reference check: runs of 2+ kanji or katakana
 const NOUN = /[一-鿿々〆ヶァ-ヴー]{2,}/gu;
@@ -50,18 +40,16 @@ const POINTER = new RegExp(
   "(?:(?<![\\u4E00-\\u9FFF々])(?:両|同|当該|上記の?|前述の?|先の)|この|その|これらの|それらの)" +
   "([\\u4E00-\\u9FFF々〆ヶァ-ヴー]{1,6})", "gu");
 
-// the mark assemble puts after a sentence, and the confirmation list it writes at the
-// end; see MARK and CONFIRM_ITEM in japango.py
-const MARK = /〔確認[0-9]+〕/gu;
-const MARK_NO = /〔確認([0-9]+)〕/gu;
-const LEAD_MARKS = /^(?:〔確認[0-9]+〕)+/u;
-const CONFIRM_HEAD = "---\n\n## 確認欄\n\n";
-const CONFIRM_ITEM = /^(?:- 〔確認[0-9]+〕|  - |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: |- 言い直しとして削った文にしか無い語: )/u;
+// the list assemble writes at the end; see CONFIRM_ITEM in japango.py
+const CONFIRM_HEAD = "---\n\n## 読みを選んだ箇所・見直す箇所\n\n";
+const CONFIRM_ITEM = /^(?:- 読みを選んだ: |- 片方の回だけが直した文: |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: |- 言い直しとして削った文にしか無い語: )/u;
 // the lines extract writes for a button, code and a picture
 const MARK_LINE = /^〔(?:ボタン|コード|画像): /u;
 // a deletion as a restatement (型 6); see RESTATE in japango.py
 const RESTATE = /^\s*型\s*6(?![0-9a-z])/u;
-const unmark = (s) => s.replace(MARK, "");
+// a line break inside a reading or a rewritten sentence: the list writes it on one line
+const LINE_BREAK_IN = /[ \t]*\n[ \t]*/gu;
+const oneLine = (s) => s.replace(LINE_BREAK_IN, " ");
 
 // ---------- Python-compatible helpers ----------
 
@@ -329,21 +317,10 @@ function loadUnits(p) {
 
 // ---------- merge ----------
 
-const useful = (q) => Boolean(q) && !(ASK_DROP.test(q) && !ASK_KEEP.test(q));
-
-// 〔誰が判断したか〕〔根拠は何か〕 -> ["誰が判断したか", "根拠は何か"].
-// Text without brackets is one question.
-function splitAsks(q) {
-  q = strip(q || "");
-  const parts = findall(/〔([^〔〕]*)〕/gu, q).map(strip).filter((x) => x);
-  if (!parts.length) return q ? [q] : [];
-  return parts;
-}
-
-// The questions of one finding worth asking, joined back as 〔..〕〔..〕.
-const usefulAsks = (q) => splitAsks(q).filter(useful).map((x) => `〔${x}〕`).join("");
-
 const get = (r, k, d) => (k in r ? r[k] : d);
+
+// A finding's "reading", on one line; "" when it has none (see reading_of in japango.py).
+const readingOf = (r) => (typeof r.reading === "string" ? oneLine(strip(r.reading)) : "");
 
 function groupById(rows) {
   const byId = new Map();
@@ -359,49 +336,23 @@ function mergeFindings(rows) {
   const merged = [];
   for (const [i, rs] of groupById(rows)) {
     const routes = new Set(rs.map((r) => r.route));
-    const askRows = rs.filter((r) => r.route === "ask" && r.fix);
-    const firstSrc = askRows.length ? Math.min(...askRows.map((r) => get(r, "src", 0))) : null;
-    const asking = askRows.filter((r) => get(r, "src", 0) === firstSrc);
-    const asks = asking.map((r) => r.fix).join("");
-    if (routes.has("keep") && asks) {
-      merged.push({ id: i, route: "ask", fix: asks });
-    } else if (routes.has("keep")) {
-      const first = rs.find((r) => r.route === "keep");
-      merged.push({ id: i, route: "keep", fix: "", pattern: get(first, "pattern", "") });
-    } else if (routes.has("rewrite")) {
-      const first = rs.find((r) => r.route === "rewrite");
-      merged.push({ id: i, route: "rewrite", fix: get(first, "fix", ""), ask: asks, pattern: get(first, "pattern", "") });
-    } else if (routes.has("delete")) {
-      const first = rs.find((r) => r.route === "delete");
-      merged.push({ id: i, route: "delete", fix: "", ask: asks, pattern: get(first, "pattern", "") });
-    } else {
-      merged.push({ id: i, route: "ask", fix: asks });
-    }
-    // what the reader is stuck on, from the findings that asked
-    const effect = effectsOf(asking);
-    if (asks && effect && merged.at(-1).route !== "keep") merged.at(-1).effect = effect;
+    const route = ["keep", "rewrite", "delete"].find((x) => routes.has(x));
+    const first = rs.find((r) => r.route === route);
+    const m = { id: i, route, fix: route === "rewrite" ? get(first, "fix", "") : "", pattern: get(first, "pattern", "") };
+    if (route === "rewrite" && readingOf(first)) m.reading = readingOf(first);
+    merged.push(m);
   }
   return merged;
 }
 
-// The "effect" of each row, without a closing 。 and without repeats, joined by ／.
-function effectsOf(rows) {
-  const out = [];
-  for (const r of rows) {
-    const e = typeof r.effect === "string" ? strip(stripChars(strip(r.effect), "。", false, true)) : "";
-    if (e && !out.includes(e)) out.push(e);
-  }
-  return out.join("／");
-}
-
-// Edits only where every run proposed an edit for the ID; questions are the union.
-// A keep from any run stays as a keep row, so the sentence is counted as kept.
+// Edits only where every run proposed an edit for the ID. A keep from any run
+// stays as a keep row, so the sentence is counted as kept.
 function mergeFindingsAgree(rows, runs) {
   let kept = [];
   for (let rs of groupById(rows).values()) {
     const editors = new Set(rs.filter((r) => EDIT_ROUTES.includes(r.route)).map((r) => get(r, "src", 0)));
     if (rs.some((r) => r.route === "keep") || editors.size < runs) {
-      rs = rs.filter((r) => r.route === "ask" || r.route === "keep");
+      rs = rs.filter((r) => r.route === "keep");
     }
     kept = kept.concat(rs);
   }
@@ -448,8 +399,6 @@ function joinError(r, us, pos) {
   const xs = ks.map((k) => us[k]);
   if (ks.some((k, n) => k !== ks[0] + n) || new Set(xs.map((x) => x.para)).size > 1) return [null, "join not contiguous"];
   if (xs.some((x) => x.raw || x.line)) return [null, "join over lines"];
-  // a sentence that is only an earlier round's 〔確認n〕 mark: joined, the mark would go
-  if (xs.some((x) => unmark(x.text) !== x.text && !strip(unmark(x.text)))) return [null, "join over mark"];
   return [[...j], null];
 }
 
@@ -516,30 +465,32 @@ function merge(us, runs, mode = "agree") {
       const key = i + "\u0000" + route;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (route === "ask") {
-        r = { ...r, fix: usefulAsks(r.fix) };
-        if (!r.fix) continue;
-      }
       rows.push({ ...r, src: n });
     }
   });
-  const [aligned, w] = alignConflicts(rows);
+  const [conflicts, w] = alignConflicts(rows);
   warnings.push(...w);
-  const [joins, rest, wj] = resolveJoins(aligned, mode, runs.length);
+  const [joins, rest, wj] = resolveJoins(rows, mode, runs.length);
   warnings.push(...wj);
   const merged = mode === "agree" ? mergeFindingsAgree(rest, runs.length) : mergeFindings(rest);
-  // a join takes the place of its first sentence's row; that sentence's questions stay on it
+  // runs that aligned a sentence toward different words: the first run's rewrite
+  // stands, and its reading says which words the runs chose
+  for (const m of merged) {
+    if (conflicts.has(m.id) && m.route === "rewrite") {
+      m.reading = [m.reading || "", alignReading(conflicts.get(m.id))].filter((x) => x).join("／");
+    }
+  }
+  // a join takes the place of its first sentence's row
   for (const a of joins) {
     const k = merged.findIndex((m) => m.id === a.id);
-    const head = k >= 0 ? merged[k] : null;
-    const asks = head && head.route === "ask" ? head.fix : "";
-    if (head) merged.splice(k, 1);
-    merged.push({ id: a.id, route: "rewrite", fix: get(a, "fix", ""), ask: asks, pattern: get(a, "pattern", ""), join: a.join });
-    if (asks && head.effect) merged.at(-1).effect = head.effect;
+    if (k >= 0) merged.splice(k, 1);
+    const m = { id: a.id, route: "rewrite", fix: get(a, "fix", ""), pattern: get(a, "pattern", ""), join: a.join };
+    if (readingOf(a)) m.reading = readingOf(a);
+    merged.push(m);
   }
   if (mode === "union" && runs.length > 1) {
-    // a rewrite only one run proposed goes in, but the writer checks it: a single
-    // run's rewrite is where new actions or events slipped in during tests
+    // a rewrite only one run proposed goes in, but is listed for a second look: a
+    // single run's rewrite is where new actions or events slipped in during tests
     const editors = new Map();
     for (const r of rows) {
       if (r.route === "rewrite") {
@@ -549,18 +500,14 @@ function merge(us, runs, mode = "agree") {
     }
     for (const m of merged) {
       const nEditors = m.join
-        ? new Set(aligned.filter((r) => r.route === "rewrite" && (m.join.includes(r.id) || overlaps(r.join, m.join))).map((r) => r.src)).size
+        ? new Set(rows.filter((r) => r.route === "rewrite" && (m.join.includes(r.id) || overlaps(r.join, m.join))).map((r) => r.src)).size
         : (editors.get(m.id)?.size ?? 0);
-      if (m.route === "rewrite" && nEditors === 1) {
-        const head = [...strip(m.fix || "").replace(/^(#+|[-*+]|\p{Nd}+[.)])\s+/u, "")];
-        const short = head.slice(0, 15).join("") + (head.length > 15 ? "…" : "");
-        m.ask = (m.ask || "") + SINGLE_REWRITE_ASK(short);
-      }
+      if (m.route === "rewrite" && nEditors === 1) m.one_run = true;
     }
   }
   // the bold check only speaks for sentences no finder run mentioned
   const mentioned = new Set(rows.map((r) => r.id));
-  for (const r of aligned) for (const j of r.join || []) mentioned.add(j);
+  for (const r of rows) for (const j of r.join || []) mentioned.add(j);
   const all = merged.concat(boldFindings(us).filter((b) => !mentioned.has(b.id)));
   const order = new Map(us.map((u, k) => [u.id, k]));
   all.sort((a, b) => order.get(a.id) - order.get(b.id));
@@ -574,11 +521,8 @@ function alignKey(word) {
   return stem || w;
 }
 
-// Rewrites of one ID from different runs that align toward different words are
-// not an agreement: which word the writer meant is not in the text. A run's align
-// word must also be in every other run's rewrite of that ID (a run that rewrote
-// the sentence under another type still chose a word). On a conflict the rewrites
-// are dropped and the ID gets an ask naming the words (other questions stay).
+// Rewrites of one ID from different runs that align toward different words; see
+// align_conflicts in japango.py. Returns [Map id -> words, warnings].
 function alignConflicts(rows) {
   const warnings = [], rewrites = new Map(), words = new Map();
   for (const r of rows) {
@@ -602,25 +546,14 @@ function alignConflicts(rows) {
     const missing = ws.some((w) => rs.some((r) => !(r.fix || "").includes(alignKey(w))));
     if (ws.length > 1 || missing) {
       conflicts.set(i, ws);
-      warnings.push(`align conflict ${i}: ${ws.join(" / ")} -> ask`);
+      warnings.push(`align conflict ${i}: ${ws.join(" / ")} -> first run`);
     }
   }
-  if (!conflicts.size) return [rows, warnings];
-  const out = [], asked = new Set();
-  for (const r of rows) {
-    if (conflicts.has(r.id) && r.route === "rewrite") {
-      if (!asked.has(r.id)) {
-        asked.add(r.id);
-        const ws = conflicts.get(r.id);
-        const q = ws.length > 1 ? ALIGN_ASK(ws.map((w) => `「${w}」`).join("・")) : ALIGN_ASK1(ws[0]);
-        out.push({ id: r.id, route: "ask", fix: q, src: r.src });
-      }
-      continue;
-    }
-    out.push(r);
-  }
-  return [out, warnings];
+  return [conflicts, warnings];
 }
+
+// The reading for runs that aligned one sentence toward different words.
+const alignReading = (ws) => ALIGN_READING(ws.length > 1 ? ws.map((w) => `「${w}」`).join("・") : `「${ws[0]}」とほかの回の言い方`);
 
 function cmdMerge(unitsPath, outPath, mode, findingPaths) {
   const [, us] = loadUnits(unitsPath);
@@ -650,18 +583,17 @@ function addedWords(nw, origDoc, origNums) {
 function assemble(us, merged) {
   const byId = new Map(us.map((u) => [u.id, u]));
   const pos = new Map(us.map((u, k) => [u.id, k]));
-  // the original to compare against: without an earlier round's confirmation list and marks
+  // the original to compare against: without an earlier round's list
   const box = us.find((u) => u.confirm) ?? null;
-  const origDoc = unmark(us.filter((u) => !u.confirm).map((u) => u.text).join(""));
+  const origDoc = us.filter((u) => !u.confirm).map((u) => u.text).join("");
   const origNums = new Set(findall(NUM, origDoc));
-  const firstNo = Math.max(0, ...us.flatMap((u) => [...u.text.matchAll(MARK_NO)].map((m) => parseInt(m[1], 10))));
   const before = new Map(us.map((u) => [u.id, u.text]));
-  const changes = [], reverted = [], confirm = [], skipped = [];
+  const changes = [], reverted = [], readings = [], oneRun = [], skipped = [];
   const joined = new Set(); // sentences a join folded into the sentence before them
   for (const f of merged) {
     const u = byId.get(f.id);
     let [span, err] = f.route === "rewrite" ? joinError(f, us, pos) : [null, null];
-    if (!u || u.raw || err || (joined.has(f.id) && f.route !== "ask")) {
+    if (!u || u.raw || err || !ROUTES.includes(f.route) || joined.has(f.id)) {
       skipped.push(f.id);
       continue;
     }
@@ -675,27 +607,21 @@ function assemble(us, merged) {
     const trail = old.slice(rstrip(old).length);
     const pm = BLOCK_START.exec(lstrip(old));
     const prefix = pm ? pm[1] : "";
-    let nw;
+    let nw, putBack = false;
     if (f.route === "delete") {
       nw = "";
-      if (f.ask) confirm.push(asked(f, f.ask));
-    } else if (f.route === "ask") {
-      nw = strip(old);
-      confirm.push(asked(f, f.fix));
     } else {
       nw = strip(f.fix || "");
-      const bare = unmark(nw);
-      const hits = addedWords(bare, origDoc, origNums);
-      if (hits.length || !strip(bare)) {
+      const hits = addedWords(nw, origDoc, origNums);
+      if (hits.length || !nw) {
         // a join that is put back puts back every sentence in it
         reverted.push({ id: f.id, proposed: nw, words: hits.length ? hits : ["空の言い換え"], ...(span ? { join: span } : {}) });
         nw = strip(old);
         span = null;
+        putBack = true;
       }
-      if (f.ask) confirm.push(asked(f, f.ask));
     }
     if (nw && prefix && !nw.startsWith(strip(prefix))) nw = prefix + nw;
-    if (f.route === "rewrite") nw = keepMarks((span || [f.id]).map((j) => byId.get(j).text), nw);
     if (span) {
       // the rest of the join goes as a deleted sentence does
       const oldSpan = span.map((j) => byId.get(j).text).join("");
@@ -705,95 +631,40 @@ function assemble(us, merged) {
       }
       u.text = lead + nw + trail;
       changes.push({ id: f.id, route: f.route, result: "変えた", pattern: get(f, "pattern", ""), before: strip(oldSpan), after: strip(u.text), join: span });
-      continue;
-    }
-    u.text = nw ? lead + nw + trail : "";
-    if (u.text !== old) {
+    } else {
+      u.text = nw ? lead + nw + trail : "";
+      if (u.text === old) continue;
       changes.push({ id: f.id, route: f.route, result: "変えた", pattern: get(f, "pattern", ""), before: strip(old), after: strip(u.text) });
+    }
+    if (f.route === "rewrite" && !putBack) {
+      const after = strip(u.text);
+      if (typeof f.reading === "string" && strip(f.reading)) readings.push({ id: f.id, reading: oneLine(strip(f.reading)), after });
+      if (f.one_run) oneRun.push({ id: f.id, after });
     }
   }
 
-  // The body carries only a short mark after the sentence; the questions go to the
-  // confirmation list. A question about a deleted sentence is marked on the nearest
-  // earlier sentence that remains, numbers follow the order in the body, and the
-  // same question asked twice gets one number.
-  const order = new Map(us.map((u, k) => [u.id, k]));
-  const markable = (x) => {
-    const t = strip(x.text);
-    return Boolean(t) && !x.raw && !t.startsWith("#") && !URL_LINE.test(t);
-  };
-  const anchor = (i) => {
-    // a question about a heading goes on the first sentence of its own section;
-    // when the next heading comes first, on the heading itself. Never on the
-    // section before or after
-    const k = order.get(i);
-    if (strip(us[k].text).startsWith("#")) {
-      for (const x of us.slice(k + 1)) {
-        if (strip(x.text).startsWith("#")) break;
-        if (markable(x)) return x.id;
-      }
-      return i;
-    }
-    for (let j = k; j >= 0; j--) if (markable(us[j])) return us[j].id;
-    return us.slice(k).find(markable)?.id ?? i;
-  };
-  for (const c of confirm) {
-    c.at = anchor(c.id);
-    // the list names the heading, since its mark may sit on the sentence under it
-    const h = strip(byId.get(c.id).text);
-    if (h.startsWith("#")) {
-      const cs = [...h.replace(/^#+\s*/u, "")];
-      c.heading = cs.slice(0, 20).join("") + (cs.length > 20 ? "…" : "");
-    }
-  }
-  confirm.sort((a, b) => order.get(a.at) - order.get(b.at) || order.get(a.id) - order.get(b.id));
-  // a question already listed is not listed again; a finding whose questions
-  // were all listed before gets no mark of its own
-  const unique = [], seen = new Set();
-  for (const c of confirm) {
-    const qs = splitAsks(c.ask).filter((q) => !seen.has(q));
-    if (!qs.length) continue;
-    qs.forEach((q) => seen.add(q));
-    c.questions = qs;
-    unique.push(c);
-  }
   const dangling = danglingRefs(us, before, joined);
   const orphans = orphanParagraphs(us, before, joined);
   const lost = lostWords(us, before, joined, changes, dangling);
-  // numbers go on from the highest mark already in the text (an earlier round's)
-  unique.forEach((c, k) => {
-    c.no = firstNo + k + 1;
-    addMark(byId.get(c.at), `〔確認${c.no}〕`);
-  });
-  const notes = dangling.map(danglingLine).concat(lost.map(lostLine), orphans.map(orphanLine));
-  const lines = unique.map(confirmLines).join("") + notes.join("");
+  readings.sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  oneRun.sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  // the list at the end; see assemble in japango.py
+  const lines = readings.map(readingLine).concat(oneRun.map(oneRunLine), dangling.map(danglingLine),
+    lost.map(lostLine), orphans.map(orphanLine)).join("");
   // an earlier round's list takes the new lines at its end: one list, one heading
   if (box !== null && lines) box.text += "\n" + stripChars(lines, "\n", false, true);
   let body = render(us);
-  if (box === null && lines) body += "\n---\n\n## 確認欄\n\n" + lines;
+  if (box === null && lines) body += "\n" + CONFIRM_HEAD + lines;
   const edited = changes.filter((c) => c.route !== "keep");
   const log = {
-    changes, reverted, confirm: unique, dangling, lost, orphans,
+    changes, reverted, readings, one_run: oneRun, dangling, lost, orphans,
     skipped: skipped.filter((s) => s), unchanged_ids: before.size - edited.reduce((s, c) => s + (c.join ? c.join.length : 1), 0),
   };
   return [body, log];
 }
 
-// An earlier round's marks the rewrite left out go back; see keep_marks in japango.py.
-function keepMarks(olds, nw) {
-  const m = LEAD_MARKS.exec(strip(olds[0]));
-  const lead = m ? findall(MARK, m[0]) : [];
-  const front = lead.filter((x) => !nw.includes(x));
-  const back = findall(MARK, olds.join("")).filter((x) => !nw.includes(x) && !lead.includes(x));
-  return front.join("") + nw + back.join("");
-}
-
-// Put the mark right after the sentence's end mark, before any trailing spaces.
-function addMark(u, mark) {
-  const t = u.text;
-  const end = rstrip(t).length;
-  u.text = t.slice(0, end) + mark + t.slice(end);
-}
+const readingLine = (x) => `- 読みを選んだ: ${x.reading}（${x.id}「${oneLine(x.after)}」）\n`;
+const oneRunLine = (x) => `- 片方の回だけが直した文: 原文に無い行動・出来事が増えていないか（${x.id}「${oneLine(x.after)}」）\n`;
 
 // a sentence a join folded away was rewritten, not deleted
 function deletedIds(us, before, joined = new Set()) {
@@ -829,7 +700,7 @@ function danglingLine(d) {
 function onlyWords(us, before, i) {
   const remaining = us.filter((u) => !u.confirm).map((u) => u.text).join("");
   const words = [];
-  for (const w of findall(NOUN, unbold(unmark(before.get(i))))) {
+  for (const w of findall(NOUN, unbold(before.get(i)))) {
     if (!remaining.includes(w) && !words.includes(w)) words.push(w);
   }
   return words;
@@ -874,23 +745,6 @@ function orphanParagraphs(us, before, joined = new Set()) {
 
 const orphanLine = (o) => `- 1 文だけ残った段落: 〔${o.text}〕（${o.id}）\n`;
 
-// A confirmation entry: the questions, and what the reader is stuck on when the finding said so.
-function asked(f, ask) {
-  const c = { id: f.id, ask };
-  if (typeof f.effect === "string" && f.effect) c.effect = f.effect;
-  return c;
-}
-
-// One question on the same line as its mark; several, one per line under it. What
-// the reader is stuck on follows the finding's last question (not one merge added).
-function confirmLines(c) {
-  const qs = [...c.questions];
-  const own = qs.map((q, k) => (AUTO_ASK.test(q) ? -1 : k)).filter((k) => k >= 0);
-  if (c.effect && own.length) qs[own.at(-1)] += `（読者が困ること: ${c.effect}）`;
-  const head = c.heading ? `（見出し「${c.heading}」）` : "";
-  if (qs.length === 1) return `- 〔確認${c.no}〕${head}${qs[0]}\n`;
-  return `- 〔確認${c.no}〕${head}\n` + qs.map((q) => `  - ${q}\n`).join("");
-}
 
 // <stem>.japango.md next to source, numbered when the name is taken.
 function outputPath(source) {
@@ -919,7 +773,8 @@ function cmdAssemble(unitsPath, mergedPath, logPath, outPath = null) {
   writeText(logPath, dumps(log, 1) + "\n");
   const kept = log.changes.filter((c) => c.route === "keep").length;
   console.log(dumps({
-    changed: log.changes.length - kept, kept, reverted: log.reverted.length, confirm: log.confirm.length,
+    changed: log.changes.length - kept, kept, reverted: log.reverted.length, readings: log.readings.length,
+    one_run: log.one_run.length,
     dangling: log.dangling.length, lost: log.lost.length, orphans: log.orphans.length, out: outPath,
   }));
   return 0;

@@ -12,16 +12,17 @@ Standard library only (Python 3.8+).
 
   merge UNITS OUT MODE FINDINGS [FINDINGS ...]
       MODE is "agree" (an edit needs every run to propose an edit for that ID;
-      the default for two runs) or "union" (any run's edit counts). Questions
-      are always the union, and a keep from any run is kept as a keep row. One
-      finding may carry several questions as 〔問い1〕〔問い2〕. Also adds a mechanical finding for bold that wraps
-      a whole sentence or appears twice in one sentence.
+      the default for two runs) or "union" (any run's edit counts). A keep from
+      any run is kept as a keep row. Routes are delete, rewrite and keep; a
+      finding with another route (the old ask) is skipped with a warning.
+      A rewrite may carry "reading": how the finder read a sentence that could
+      be read more than one way. It goes with the rewrite that is taken. Also
+      adds a mechanical finding for bold that wraps a whole sentence or appears
+      twice in one sentence.
       A rewrite for types 21, 21d and 21e names the word it aligns to in "align".
-      When runs rewrite one ID toward different words, neither rewrite is used:
-      the ID becomes an ask that names the words, since which one the writer
-      meant is not in the text.
-      An ID's questions carry the "effect" of the findings that asked them
-      (what the reader is stuck on), as "effect".
+      When runs rewrite one ID toward different words, the first run's rewrite
+      is used and its reading names the words.
+      In union mode, a rewrite only one run proposed gets "one_run".
       A rewrite may join sentences: "join" lists the IDs it replaces, the first
       being "id", all in a row in one prose paragraph (not headings or list
       items). A join is taken only when no run keeps a sentence in it; in agree
@@ -34,25 +35,22 @@ Standard library only (Python 3.8+).
       (<stem>.japango-2.md, -3 ... when the name is taken; the source itself is
       never written). --out writes elsewhere instead.
       Apply the merged findings without a separate rewriting step:
-      delete -> the sentence goes, rewrite -> the finder's sentence replaces it,
-      ask -> the sentence stays and gets a 〔確認n〕 mark. A rewritten sentence that
-      brings a cause, limit or time word, or a number, that the whole original
-      never had is put back to the original. Questions are listed at the end;
-      several questions on one sentence share one mark, and a finding's effect
-      follows its last question as （読者が困ること: ...）. keep rows are logged in
-      changes as 残した. A join puts its sentence where the first one was and
-      empties the rest; when it is put back, every sentence in it is.
-      Two things are only reported, never fixed: a word that appears only in a
-      deleted sentence while a later sentence still points at it (両課, この方式,
-      同社 ...) goes to "dangling", and a prose paragraph left with one sentence
-      after deletions goes to "orphans". A sentence deleted as a restatement
-      (型 6) that held a word found nowhere else in the body goes to "lost".
-      All three are listed at the end of the confirmation list.
-      A second round (ids on an assembled text): its confirmation list is one
-      raw unit, left out of the added-fact check, and the new questions,
-      numbered on from the highest 〔確認n〕, go at its end. Marks are not part
-      of the original for the check; a rewrite keeps the marks it held, and a
-      join over a sentence that is only a mark is not taken ("join over mark").
+      delete -> the sentence goes, rewrite -> the finder's sentence replaces it.
+      A rewritten sentence that brings a cause, limit or time word, or a number,
+      that the whole original never had is put back to the original. keep rows
+      are logged in changes as 残した. A join puts its sentence where the first
+      one was and empties the rest; when it is put back, every sentence in it is.
+      Nothing asks the writer for facts. The list at the end
+      (## 読みを選んだ箇所・見直す箇所) names the readings of the rewrites that
+      were used ("readings"), the rewrites only one run proposed ("one_run"),
+      and three things that are only reported, never fixed: a word that appears
+      only in a deleted sentence while a later sentence still points at it
+      (両課, この方式, 同社 ...) goes to "dangling", a prose paragraph left with
+      one sentence after deletions goes to "orphans", and a sentence deleted as
+      a restatement (型 6) that held a word found nowhere else in the body goes
+      to "lost". No list is written when there is nothing to list.
+      A second round (ids on an assembled text): its list is one raw unit, left
+      out of the added-fact check, and the new lines go at its end.
 
   extract PAGE.html -o OUT_MD
       Take the text out of an HTML page as Markdown for ids: headings as #, list
@@ -71,30 +69,19 @@ SENT = re.compile(r"[^。！？]*[。！？](?:\*\*|[」』）)])*|[^。！？]+
 BLOCK_START = re.compile(r"(#{1,6} |[-*+] |\d+[.)] |> )")
 FENCE = re.compile(r"\s*(```|~~~)")
 
-ROUTES = ("delete", "rewrite", "ask", "keep")
+ROUTES = ("delete", "rewrite", "keep")
 # types whose rewrite aligns a word with the rest of the text (呼び名・人の呼び名・動詞)
 ALIGN_TYPES = re.compile(r"型\s*21[de]?(?![0-9a-z])")
-ALIGN_ASK = "〔{words}のどれにそろえるか〕"
-ALIGN_ASK1 = "〔「{word}」とほかの回の言い方のどちらにそろえるか〕"
-# a line that is only a URL: a mark after it would become part of the link
-URL_LINE = re.compile(r"<?https?://\S+>?")
+# runs that align one sentence toward different words: the first run's rewrite is
+# used, and this reading says so
+ALIGN_READING = "そろえる語が回で分かれた（{words}）。先の回の言い方で直した"
 EDIT_ROUTES = ("rewrite", "delete")
 
 # words that state a cause or a limit, and words that bound a time
 ADDED_MARKERS = ["だけ", "のみ", "紛れ", "ため", "により", "によって", "原因", "せいで"]
-SINGLE_REWRITE_ASK = "〔「{head}」の書き直しで、原文に無い行動・出来事が増えていないか〕"
-# the questions merge adds by itself (SINGLE_REWRITE_ASK, ALIGN_ASK, ALIGN_ASK1), which
-# no finding's "effect" speaks for
-AUTO_ASK = re.compile(r"「.*」の書き直しで、原文に無い行動・出来事が増えていないか"
-                      r"|(?:「[^」]*」・)+「[^」]*」のどれにそろえるか|「[^」]*」とほかの回の言い方のどちらにそろえるか")
 TIME_MARKERS = ["まで", "以降", "以前", "までに"]
 NUM = re.compile(r"\d+(?:\.\d+)?")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
-
-# questions about deadlines or owners of future work are not what the text is missing;
-# keep questions about who decided, why, and what caused it
-ASK_KEEP = re.compile(r"誰|なぜ|理由|根拠|原因|どの|何を|出典")
-ASK_DROP = re.compile(r"いつまで|期限|期日|予定")
 
 # nouns for the dangling-reference check: runs of 2+ kanji or katakana
 NOUN = re.compile(r"[\u4E00-\u9FFF々〆ヶァ-ヴー]{2,}")
@@ -102,20 +89,23 @@ NOUN = re.compile(r"[\u4E00-\u9FFF々〆ヶァ-ヴー]{2,}")
 POINTER = re.compile(r"(?:(?<![\u4E00-\u9FFF々])(?:両|同|当該|上記の?|前述の?|先の)|この|その|これらの|それらの)"
                      r"([\u4E00-\u9FFF々〆ヶァ-ヴー]{1,6})")
 
-# the mark assemble puts after a sentence, and the confirmation list it writes at the
-# end: "---", a blank line, "## 確認欄", a blank line, then only lines of the forms
-# confirm_lines, dangling_line and orphan_line write
-MARK = re.compile(r"〔確認[0-9]+〕")
-MARK_NO = re.compile(r"〔確認([0-9]+)〕")
-LEAD_MARKS = re.compile(r"(?:〔確認[0-9]+〕)+")
-CONFIRM_HEAD = "---\n\n## 確認欄\n\n"
-CONFIRM_ITEM = re.compile(r"(?:- 〔確認[0-9]+〕|  - |- 削った文が指していた語が残っていません: |- 1 文だけ残った段落: "
-                          r"|- 言い直しとして削った文にしか無い語: )")
+# the list assemble writes at the end: "---", a blank line, the heading, a blank line,
+# then only lines of the forms reading_line, one_run_line, dangling_line, lost_line
+# and orphan_line write. None of them asks the writer for facts
+CONFIRM_HEAD = "---\n\n## 読みを選んだ箇所・見直す箇所\n\n"
+CONFIRM_ITEM = re.compile(r"(?:- 読みを選んだ: |- 片方の回だけが直した文: |- 削った文が指していた語が残っていません: "
+                          r"|- 1 文だけ残った段落: |- 言い直しとして削った文にしか無い語: )")
 # the lines extract writes for a button, code and a picture
 MARK_LINE = re.compile(r"〔(?:ボタン|コード|画像): ")
 # a deletion as a restatement (型 6) says the sentence adds nothing; a word found
 # nowhere else in the body says otherwise
 RESTATE = re.compile(r"^\s*型\s*6(?![0-9a-z])")
+# a line break inside a reading or a rewritten sentence: the list writes it on one line
+LINE_BREAK_IN = re.compile(r"[ \t]*\n[ \t]*")
+
+
+def one_line(s):
+    return LINE_BREAK_IN.sub(" ", s)
 
 
 # ---------- files ----------
@@ -307,36 +297,19 @@ def load_units(path):
 
 # ---------- merge ----------
 
-def useful_ask(q):
-    return bool(q) and not (ASK_DROP.search(q) and not ASK_KEEP.search(q))
-
-
-def split_asks(q):
-    """〔誰が判断したか〕〔根拠は何か〕 -> ["誰が判断したか", "根拠は何か"].
-    Text without brackets is one question."""
-    q = (q or "").strip()
-    parts = [x.strip() for x in re.findall(r"〔([^〔〕]*)〕", q)]
-    parts = [x for x in parts if x]
-    if not parts:
-        return [q] if q else []
-    return parts
-
-
-def useful_asks(q):
-    """The questions of one finding worth asking, joined back as 〔..〕〔..〕."""
-    return "".join(f"〔{x}〕" for x in split_asks(q) if useful_ask(x))
+def reading_of(r):
+    """A finding's "reading" (how the finder read a sentence that could be read more
+    than one way), on one line; "" when it has none."""
+    x = r.get("reading")
+    return one_line(x.strip()) if isinstance(x, str) else ""
 
 
 def merge_findings(rows):
     """Collapse several findings for one ID into one row.
 
-    keep wins (the less destructive side when runs disagree); a keep that also
-    has a question becomes an ask, since the sentence stays either way. Otherwise an edit
-    (rewrite, then delete) wins over ask, so a run that only asked cannot keep a
-    sentence another run fixed; its question still goes to the confirmation list.
-    Questions come from the earliest run that asked, so two runs do not stack
-    the same question twice. The "effect" of the findings those questions came
-    from goes along as "effect".
+    keep wins (the less destructive side when runs disagree), then rewrite, then
+    delete. The row takes the earliest run's finding of that route; a rewrite
+    carries that finding's "reading" when it has one.
     """
     by_id = {}
     for r in rows:
@@ -344,47 +317,19 @@ def merge_findings(rows):
     merged = []
     for i, rs in by_id.items():
         routes = {r["route"] for r in rs}
-        ask_rows = [r for r in rs if r["route"] == "ask" and r.get("fix")]
-        first_src = min((r.get("src", 0) for r in ask_rows), default=None)
-        asking = [r for r in ask_rows if r.get("src", 0) == first_src]
-        asks = "".join(r["fix"] for r in asking)
-        if "keep" in routes and asks:
-            merged.append({"id": i, "route": "ask", "fix": asks})
-        elif "keep" in routes:
-            first = next(r for r in rs if r["route"] == "keep")
-            merged.append({"id": i, "route": "keep", "fix": "", "pattern": first.get("pattern", "")})
-        elif "rewrite" in routes:
-            first = next(r for r in rs if r["route"] == "rewrite")
-            merged.append({"id": i, "route": "rewrite", "fix": first.get("fix", ""), "ask": asks,
-                           "pattern": first.get("pattern", "")})
-        elif "delete" in routes:
-            first = next(r for r in rs if r["route"] == "delete")
-            merged.append({"id": i, "route": "delete", "fix": "", "ask": asks,
-                           "pattern": first.get("pattern", "")})
-        else:
-            merged.append({"id": i, "route": "ask", "fix": asks})
-        # what the reader is stuck on, from the findings that asked: the writer answers
-        # the question with it in view, not the question alone
-        effect = effects_of(asking)
-        if asks and effect and merged[-1]["route"] != "keep":
-            merged[-1]["effect"] = effect
+        route = next(x for x in ("keep", "rewrite", "delete") if x in routes)
+        first = next(r for r in rs if r["route"] == route)
+        m = {"id": i, "route": route, "fix": first.get("fix", "") if route == "rewrite" else "",
+             "pattern": first.get("pattern", "")}
+        if route == "rewrite" and reading_of(first):
+            m["reading"] = reading_of(first)
+        merged.append(m)
     return merged
 
 
-def effects_of(rows):
-    """The "effect" of each row, without a closing 。 and without repeats, joined by ／."""
-    out = []
-    for r in rows:
-        e = r.get("effect")
-        e = e.strip().rstrip("。").strip() if isinstance(e, str) else ""
-        if e and e not in out:
-            out.append(e)
-    return "／".join(out)
-
-
 def merge_findings_agree(rows, runs):
-    """Edits only where every run proposed an edit for the ID; questions are the union.
-    A keep from any run stays as a keep row, so the sentence is counted as kept."""
+    """Edits only where every run proposed an edit for the ID. A keep from any run
+    stays as a keep row, so the sentence is counted as kept."""
     by_id = {}
     for r in rows:
         by_id.setdefault(r["id"], []).append(r)
@@ -392,7 +337,7 @@ def merge_findings_agree(rows, runs):
     for rs in by_id.values():
         editors = {r.get("src", 0) for r in rs if r["route"] in EDIT_ROUTES}
         if any(r["route"] == "keep" for r in rs) or len(editors) < runs:
-            rs = [r for r in rs if r["route"] in ("ask", "keep")]
+            rs = [r for r in rs if r["route"] == "keep"]
         kept += rs
     return merge_findings(kept)
 
@@ -439,9 +384,6 @@ def join_error(r, us, pos):
         return None, "join not contiguous"
     if any(x.get("raw") or x.get("line") for x in xs):
         return None, "join over lines"
-    # a sentence that is only an earlier round's 〔確認n〕 mark: joined, the mark would go
-    if any(MARK.search(x["text"]) and not MARK.sub("", x["text"]).strip() for x in xs):
-        return None, "join over mark"
     return list(j), None
 
 
@@ -510,29 +452,30 @@ def merge(us, runs, mode="agree"):
             if (i, route) in seen:
                 continue
             seen.add((i, route))
-            if route == "ask":
-                r = dict(r, fix=useful_asks(r.get("fix")))
-                if not r["fix"]:
-                    continue
             rows.append(dict(r, src=n))
-    rows, w = align_conflicts(rows)
+    conflicts, w = align_conflicts(rows)
     warnings += w
     joins, rest, w = resolve_joins(rows, mode, len(runs))
     warnings += w
     merged = merge_findings_agree(rest, len(runs)) if mode == "agree" else merge_findings(rest)
-    # a join takes the place of its first sentence's row; that sentence's questions stay on it
+    # runs that aligned a sentence toward different words: the first run's rewrite
+    # stands, and its reading says which words the runs chose
+    for m in merged:
+        if m["id"] in conflicts and m["route"] == "rewrite":
+            m["reading"] = "／".join(x for x in (m.get("reading", ""), align_reading(conflicts[m["id"]])) if x)
+    # a join takes the place of its first sentence's row
     for a in joins:
         head = next((m for m in merged if m["id"] == a["id"]), None)
-        asks = head["fix"] if head and head["route"] == "ask" else ""
         if head:
             merged.remove(head)
-        merged.append({"id": a["id"], "route": "rewrite", "fix": a.get("fix", ""), "ask": asks,
-                       "pattern": a.get("pattern", ""), "join": a["join"]})
-        if asks and head.get("effect"):
-            merged[-1]["effect"] = head["effect"]
+        m = {"id": a["id"], "route": "rewrite", "fix": a.get("fix", ""), "pattern": a.get("pattern", ""),
+             "join": a["join"]}
+        if reading_of(a):
+            m["reading"] = reading_of(a)
+        merged.append(m)
     if mode == "union" and len(runs) > 1:
-        # a rewrite only one run proposed goes in, but the writer checks it: a single
-        # run's rewrite is where new actions or events slipped in during tests
+        # a rewrite only one run proposed goes in, but is listed for a second look: a
+        # single run's rewrite is where new actions or events slipped in during tests
         editors = {}
         for r in rows:
             if r["route"] == "rewrite":
@@ -544,9 +487,7 @@ def merge(us, runs, mode="agree"):
             else:
                 n_editors = len(editors.get(m["id"], ()))
             if m["route"] == "rewrite" and n_editors == 1:
-                head = re.sub(r"^(#+|[-*+]|\d+[.)])\s+", "", (m.get("fix") or "").strip())
-                head = head[:15] + ("…" if len(head) > 15 else "")
-                m["ask"] = (m.get("ask") or "") + SINGLE_REWRITE_ASK.format(head=head)
+                m["one_run"] = True
     # the bold check only speaks for sentences no finder run mentioned
     mentioned = {r["id"] for r in rows}
     for r in rows:
@@ -566,10 +507,10 @@ def align_key(word):
 
 def align_conflicts(rows):
     """Rewrites of one ID from different runs that align toward different words are
-    not an agreement: which word the writer meant is not in the text. A run's align
-    word must also be in every other run's rewrite of that ID (a run that rewrote
-    the sentence under another type still chose a word). On a conflict the rewrites
-    are dropped and the ID gets an ask naming the words (other questions stay)."""
+    not an agreement on the word. A run's align word must also be in every other
+    run's rewrite of that ID (a run that rewrote the sentence under another type
+    still chose a word). The rewrites stay: merge uses the first run's, and its
+    reading names the words. Returns ({id: words}, warnings)."""
     warnings, rewrites, words = [], {}, {}
     for r in rows:
         if r["route"] != "rewrite":
@@ -592,21 +533,14 @@ def align_conflicts(rows):
         missing = any(align_key(w) not in (r.get("fix") or "") for w in ws for r in rs)
         if len(ws) > 1 or missing:
             conflicts[i] = ws
-            warnings.append(f"align conflict {i}: {' / '.join(ws)} -> ask")
-    if not conflicts:
-        return rows, warnings
-    out, asked = [], set()
-    for r in rows:
-        if r["id"] in conflicts and r["route"] == "rewrite":
-            if r["id"] not in asked:
-                asked.add(r["id"])
-                ws = conflicts[r["id"]]
-                q = (ALIGN_ASK.format(words="・".join(f"「{w}」" for w in ws)) if len(ws) > 1
-                     else ALIGN_ASK1.format(word=ws[0]))
-                out.append({"id": r["id"], "route": "ask", "fix": q, "src": r["src"]})
-            continue
-        out.append(r)
-    return out, warnings
+            warnings.append(f"align conflict {i}: {' / '.join(ws)} -> first run")
+    return conflicts, warnings
+
+
+def align_reading(ws):
+    """The reading for runs that aligned one sentence toward different words."""
+    words = "・".join(f"「{w}」" for w in ws) if len(ws) > 1 else f"「{ws[0]}」とほかの回の言い方"
+    return ALIGN_READING.format(words=words)
 
 
 def cmd_merge(units_path, out_path, mode, finding_paths):
@@ -636,19 +570,18 @@ def assemble(us, merged):
     """Returns (body, log). us is changed in place."""
     by_id = {u["id"]: u for u in us}
     pos = {u["id"]: k for k, u in enumerate(us)}
-    # the original to compare against: the body without an earlier round's
-    # confirmation list and 〔確認n〕 marks, whose words are not the writer's text
+    # the original to compare against: the body without an earlier round's list,
+    # whose words are not the writer's text
     box = next((u for u in us if u.get("confirm")), None)
-    orig_doc = MARK.sub("", "".join(u["text"] for u in us if not u.get("confirm")))
+    orig_doc = "".join(u["text"] for u in us if not u.get("confirm"))
     orig_nums = set(NUM.findall(orig_doc))
-    first_no = max((int(n) for u in us for n in MARK_NO.findall(u["text"])), default=0)
     before = {u["id"]: u["text"] for u in us}
-    changes, reverted, confirm, skipped = [], [], [], []
+    changes, reverted, readings, one_run, skipped = [], [], [], [], []
     joined = set()  # sentences a join folded into the sentence before them
     for f in merged:
         u = by_id.get(f.get("id"))
         span, err = join_error(f, us, pos) if f.get("route") == "rewrite" else (None, None)
-        if not u or u.get("raw") or err or (f["id"] in joined and f["route"] != "ask"):
+        if not u or u.get("raw") or err or f.get("route") not in ROUTES or f["id"] in joined:
             skipped.append(f.get("id"))
             continue
         old = u["text"]
@@ -661,28 +594,19 @@ def assemble(us, merged):
         trail = old[len(old.rstrip()):]
         prefix = BLOCK_START.match(old.lstrip())
         prefix = prefix.group(1) if prefix else ""
+        put_back = False
         if f["route"] == "delete":
             new = ""
-            if f.get("ask"):
-                confirm.append(asked(f, f["ask"]))
-        elif f["route"] == "ask":
-            new = old.strip()
-            confirm.append(asked(f, f["fix"]))
         else:
             new = (f.get("fix") or "").strip()
-            bare = MARK.sub("", new)
-            hits = added_words(bare, orig_doc, orig_nums)
-            if hits or not bare.strip():
+            hits = added_words(new, orig_doc, orig_nums)
+            if hits or not new:
                 # a join that is put back puts back every sentence in it
                 reverted.append(dict({"id": f["id"], "proposed": new, "words": hits or ["空の言い換え"]},
                                      **({"join": span} if span else {})))
-                new, span = old.strip(), None
-            if f.get("ask"):
-                confirm.append(asked(f, f["ask"]))
+                new, span, put_back = old.strip(), None, True
         if new and prefix and not new.startswith(prefix.strip()):
             new = prefix + new
-        if f["route"] == "rewrite":
-            new = keep_marks([by_id[j]["text"] for j in span or [f["id"]]], new)
         if span:
             # the rest of the join goes as a deleted sentence does
             old_span = "".join(by_id[j]["text"] for j in span)
@@ -693,107 +617,49 @@ def assemble(us, merged):
             changes.append({"id": f["id"], "route": f["route"], "result": "変えた",
                             "pattern": f.get("pattern", ""),
                             "before": old_span.strip(), "after": u["text"].strip(), "join": span})
-            continue
-        u["text"] = (lead + new + trail) if new else ""
-        if u["text"] != old:
+        else:
+            u["text"] = (lead + new + trail) if new else ""
+            if u["text"] == old:
+                continue
             changes.append({"id": f["id"], "route": f["route"], "result": "変えた",
                             "pattern": f.get("pattern", ""),
                             "before": old.strip(), "after": u["text"].strip()})
+        if f["route"] == "rewrite" and not put_back:
+            after = u["text"].strip()
+            if isinstance(f.get("reading"), str) and f["reading"].strip():
+                readings.append({"id": f["id"], "reading": one_line(f["reading"].strip()), "after": after})
+            if f.get("one_run"):
+                one_run.append({"id": f["id"], "after": after})
 
-    # The body carries only a short mark after the sentence; the questions go to the
-    # confirmation list. A question about a deleted sentence is marked on the nearest
-    # earlier sentence that remains, numbers follow the order in the body, and the
-    # same question asked twice gets one number.
-    order = {u["id"]: k for k, u in enumerate(us)}
-
-    def markable(x):
-        t = x["text"].strip()
-        return t and not x.get("raw") and not t.startswith("#") and not URL_LINE.fullmatch(t)
-
-    def anchor(i):
-        # a question about a heading goes on the first sentence of its own section;
-        # when the next heading comes first, on the heading itself. Never on the
-        # section before or after
-        if us[order[i]]["text"].strip().startswith("#"):
-            for x in us[order[i] + 1:]:
-                if x["text"].strip().startswith("#"):
-                    break
-                if markable(x):
-                    return x["id"]
-            return i
-        for j in range(order[i], -1, -1):
-            if markable(us[j]):
-                return us[j]["id"]
-        return next((x["id"] for x in us[order[i]:] if markable(x)), i)
-
-    for c in confirm:
-        c["at"] = anchor(c["id"])
-        # the list names the heading, since its mark may sit on the sentence under it
-        h = by_id[c["id"]]["text"].strip()
-        if h.startswith("#"):
-            h = re.sub(r"^#+\s*", "", h)
-            c["heading"] = h[:20] + ("…" if len(h) > 20 else "")
-    confirm.sort(key=lambda c: (order[c["at"]], order[c["id"]]))
-    # a question already listed is not listed again; a finding whose questions
-    # were all listed before gets no mark of its own
-    unique, seen = [], set()
-    for c in confirm:
-        qs = [q for q in split_asks(c["ask"]) if q not in seen]
-        if not qs:
-            continue
-        seen.update(qs)
-        c["questions"] = qs
-        unique.append(c)
     dangling = dangling_refs(us, before, joined)
     orphans = orphan_paragraphs(us, before, joined)
     lost = lost_words(us, before, joined, changes, dangling)
-    # numbers go on from the highest mark already in the text (an earlier round's)
-    for n, c in enumerate(unique, first_no + 1):
-        c["no"] = n
-        add_mark(by_id[c["at"]], f"〔確認{n}〕")
-    notes = ([dangling_line(d) for d in dangling] + [lost_line(x) for x in lost]
-             + [orphan_line(o) for o in orphans])
-    lines = "".join(confirm_lines(c) for c in unique) + "".join(notes)
+    readings.sort(key=lambda x: pos[x["id"]])
+    one_run.sort(key=lambda x: pos[x["id"]])
+    # the list at the end: how sentences that could be read two ways were read, the
+    # rewrites only one run proposed, then what deletions left behind
+    lines = "".join([reading_line(x) for x in readings] + [one_run_line(x) for x in one_run]
+                    + [dangling_line(d) for d in dangling] + [lost_line(x) for x in lost]
+                    + [orphan_line(o) for o in orphans])
     if box is not None and lines:
         # an earlier round's list takes the new lines at its end: one list, one heading
         box["text"] += "\n" + lines.rstrip("\n")
     body = render(us)
     if box is None and lines:
-        body += "\n---\n\n## 確認欄\n\n" + lines
+        body += "\n" + CONFIRM_HEAD + lines
     edited = [c for c in changes if c["route"] != "keep"]
-    log = {"changes": changes, "reverted": reverted, "confirm": unique,
+    log = {"changes": changes, "reverted": reverted, "readings": readings, "one_run": one_run,
            "dangling": dangling, "lost": lost, "orphans": orphans,
            "skipped": [s for s in skipped if s], "unchanged_ids": len(before) - sum(len(c.get("join") or [c]) for c in edited)}
     return body, log
 
 
-def asked(f, ask):
-    """A confirmation entry: the questions, and what the reader is stuck on when the
-    finding said so."""
-    c = {"id": f["id"], "ask": ask}
-    if isinstance(f.get("effect"), str) and f["effect"]:
-        c["effect"] = f["effect"]
-    return c
+def reading_line(x):
+    return f"- 読みを選んだ: {x['reading']}（{x['id']}「{one_line(x['after'])}」）\n"
 
 
-def keep_marks(olds, new):
-    """An earlier round's 〔確認n〕 marks in the replaced sentences that the rewrite
-    left out go back: marks at the start of the first sentence (they belong to the
-    sentence before it) in front, the others at the end."""
-    m = LEAD_MARKS.match(olds[0].strip())
-    lead = MARK.findall(m.group(0)) if m else []
-    front = [x for x in lead if x not in new]
-    back = [x for x in MARK.findall("".join(olds)) if x not in new and x not in lead]
-    return "".join(front) + new + "".join(back)
-
-
-def add_mark(u, mark):
-    """Put the mark right after the sentence's end mark (。 and its closing marks),
-    before any trailing spaces, so it never sits after a hard break or mid-line.
-    Whatever followed the sentence (the next sentence's leading space) is untouched."""
-    t = u["text"]
-    end = len(t.rstrip())
-    u["text"] = t[:end] + mark + t[end:]
+def one_run_line(x):
+    return f"- 片方の回だけが直した文: 原文に無い行動・出来事が増えていないか（{x['id']}「{one_line(x['after'])}」）\n"
 
 
 def deleted_ids(us, before, joined=()):
@@ -837,7 +703,7 @@ def only_words(us, before, i):
     """Nouns of the deleted sentence i found nowhere in the remaining body."""
     remaining = "".join(u["text"] for u in us if not u.get("confirm"))
     words = []
-    for w in NOUN.findall(unbold(MARK.sub("", before[i]))):
+    for w in NOUN.findall(unbold(before[i])):
         if w not in remaining and w not in words:
             words.append(w)
     return words
@@ -889,20 +755,6 @@ def orphan_line(o):
     return f"- 1 文だけ残った段落: 〔{o['text']}〕（{o['id']}）\n"
 
 
-def confirm_lines(c):
-    """One question on the same line as its mark; several, one per line under it.
-    What the reader is stuck on follows the finding's last question (not a question
-    merge added on its own, such as SINGLE_REWRITE_ASK)."""
-    qs = list(c["questions"])
-    own = [k for k, q in enumerate(qs) if not AUTO_ASK.fullmatch(q)]
-    if c.get("effect") and own:
-        qs[own[-1]] += f"（読者が困ること: {c['effect']}）"
-    head = f"（見出し「{c['heading']}」）" if c.get("heading") else ""
-    if len(qs) == 1:
-        return f"- 〔確認{c['no']}〕{head}{qs[0]}\n"
-    return f"- 〔確認{c['no']}〕{head}\n" + "".join(f"  - {q}\n" for q in qs)
-
-
 def output_path(source):
     """<stem>.japango.md next to source, numbered when the name is taken."""
     src = Path(source)
@@ -931,7 +783,8 @@ def cmd_assemble(units_path, merged_path, log_path, out_path=None):
     write_text(log_path, json.dumps(log, ensure_ascii=False, indent=1) + "\n")
     kept = sum(1 for c in log["changes"] if c["route"] == "keep")
     print(json.dumps({"changed": len(log["changes"]) - kept, "kept": kept,
-                      "reverted": len(log["reverted"]), "confirm": len(log["confirm"]),
+                      "reverted": len(log["reverted"]), "readings": len(log["readings"]),
+                      "one_run": len(log["one_run"]),
                       "dangling": len(log["dangling"]), "lost": len(log["lost"]), "orphans": len(log["orphans"]),
                       "out": str(out_path)}, ensure_ascii=False))
     return 0

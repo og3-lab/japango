@@ -1,0 +1,4 @@
+{"id": "p3-s1", "pattern": "型21c", "quote": "それは", "effect": "何を見直すか分からない", "route": "rewrite", "fix": "人数は毎週月曜に見直します。", "reading": "別の読み"}
+{"id": "p3-s3", "pattern": "型21d", "quote": "お客様", "effect": "別の人が出てきたと取る", "route": "rewrite", "align": "お客様", "fix": "お客様には翌日に返事をします。"}
+{"id": "p2-s3", "pattern": "型28", "quote": "昼は一人になります。", "effect": "x", "route": "delete"}
+{"id": "p3-s2", "pattern": "型21d", "quote": "申込者", "effect": "x", "route": "rewrite", "align": "お客様", "fix": "お客様には電話で知らせます。"}

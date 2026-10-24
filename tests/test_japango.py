@@ -105,73 +105,50 @@ class Merge(unittest.TestCase):
         merged, _ = jp.merge(self.us, [a, []], "union")
         self.assertEqual(merged[0]["route"], "rewrite")
 
-    def test_union_single_rewrite_is_marked(self):
+    def test_union_single_rewrite_is_listed(self):
         a = [{"id": "p1-s2", "route": "rewrite", "fix": "新しい文。"},
              {"id": "p1-s3", "route": "rewrite", "fix": "別の文。"},
              {"id": "p1-s4", "route": "rewrite", "fix": "両方の文。"}]
         b = [{"id": "p1-s4", "route": "rewrite", "fix": "両方の文。"}]
         merged, _ = jp.merge(self.us, [a, b], "union")
-        asks = {r["id"]: r.get("ask", "") for r in merged}
-        self.assertIn("新しい文", asks["p1-s2"])
-        self.assertIn("別の文", asks["p1-s3"])
-        self.assertEqual(asks["p1-s4"], "")
+        flags = {r["id"]: r.get("one_run", False) for r in merged}
+        self.assertEqual(flags, {"p1-s2": True, "p1-s3": True, "p1-s4": False})
         body, log = jp.assemble([dict(u) for u in self.us], merged)
-        self.assertIn("〔確認1〕", body)
-        self.assertIn("〔確認2〕", body)
+        self.assertNotIn("〔", body)
+        self.assertIn("- 片方の回だけが直した文: 原文に無い行動・出来事が増えていないか（p1-s2「新しい文。」）\n", body)
+        self.assertIn("（p1-s3「別の文。」）\n", body)
+        self.assertNotIn("p1-s4「", body)
+        self.assertEqual([x["id"] for x in log["one_run"]], ["p1-s2", "p1-s3"])
         merged, _ = jp.merge(self.us, [a, b], "agree")
-        self.assertTrue(all(not r.get("ask") for r in merged))
+        self.assertTrue(all(not r.get("one_run") for r in merged))
 
-    def test_single_rewrite_of_heading_marks_next_sentence(self):
+    def test_single_rewrite_of_heading_is_listed(self):
         us = [{"id": "p1-s1", "text": "前の節の文。", "para": 1},
               {"id": "p2-s1", "text": "## 見出し", "para": 2},
               {"id": "p3-s1", "text": "見出しの下の文。", "para": 3}]
         a = [{"id": "p2-s1", "route": "rewrite", "fix": "## 新しい見出し"}]
         merged, _ = jp.merge(us, [a, []], "union")
-        self.assertNotIn("#", merged[0]["ask"])
+        self.assertTrue(merged[0]["one_run"])
         body, _ = jp.assemble([dict(u) for u in us], merged)
-        self.assertIn("見出しの下の文。〔確認1〕", body)
-        self.assertNotIn("前の節の文。〔確認1〕", body)
+        self.assertIn("（p2-s1「## 新しい見出し」）", body)
+        self.assertNotIn("〔", body)
 
-    def test_heading_ask_stays_in_its_section(self):
-        # the next unit is another heading, then a bare URL: the mark goes on the
-        # heading itself, not after the URL of the next section
-        us = [{"id": "p1-s1", "text": "# 題", "para": 1},
-              {"id": "p2-s1", "text": "## 動画", "para": 2},
-              {"id": "p3-s1", "text": "https://example.com/v", "para": 3},
-              {"id": "p4-s1", "text": "本文の文。", "para": 4}]
-        a = [{"id": "p1-s1", "route": "ask", "fix": "〔どのように作ったか〕"}]
-        merged, _ = jp.merge(us, [a, a], "agree")
-        body, log = jp.assemble([dict(u) for u in us], merged)
-        self.assertIn("# 題〔確認1〕", body)
-        self.assertIn("https://example.com/v\n", body)
-        self.assertNotIn("本文の文。〔確認1〕", body)
-        self.assertIn("- 〔確認1〕（見出し「題」）どのように作ったか", body)
-        self.assertEqual(log["confirm"][0]["at"], "p1-s1")
-
-    def test_heading_ask_with_sentence_names_the_heading(self):
-        us = [{"id": "p1-s1", "text": "## 見出し", "para": 1},
-              {"id": "p2-s1", "text": "見出しの下の文。", "para": 2}]
-        a = [{"id": "p1-s1", "route": "ask", "fix": "〔何を指すか〕"}]
-        merged, _ = jp.merge(us, [a, a], "agree")
-        body, _ = jp.assemble([dict(u) for u in us], merged)
-        self.assertIn("見出しの下の文。〔確認1〕", body)
-        self.assertIn("- 〔確認1〕（見出し「見出し」）何を指すか", body)
-
-    def test_align_conflict_becomes_ask(self):
-        # both runs rewrite, but toward different words: not an agreement
+    def test_align_conflict_takes_first_run_and_says_so(self):
+        # both runs rewrite, but toward different words: not an agreement on the word
         a = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21e 同じ動作を別の動詞で呼ぶ",
               "align": "質問する", "fix": "あなたに質問します。"}]
         b = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21e", "align": "聞く",
               "fix": "あなたに聞きます。"}]
+        reading = "そろえる語が回で分かれた（「質問する」・「聞く」）。先の回の言い方で直した"
         for mode in ("agree", "union"):
             merged, warnings = jp.merge(self.us, [a, b], mode)
             row = next(r for r in merged if r["id"] == "p1-s2")
-            self.assertEqual(row["route"], "ask", mode)
-            self.assertEqual(row["fix"], "〔「質問する」・「聞く」のどれにそろえるか〕")
-            self.assertTrue(any("align conflict p1-s2" in w for w in warnings))
+            self.assertEqual((row["route"], row["fix"]), ("rewrite", "あなたに質問します。"), mode)
+            self.assertEqual(row["reading"], reading, mode)
+            self.assertIn("align conflict p1-s2: 質問する / 聞く -> first run", warnings)
         body, _ = jp.assemble([dict(u) for u in self.us], merged)
-        self.assertNotIn("あなたに", body)
-        self.assertIn("〔確認1〕", body)
+        self.assertIn("文1。あなたに質問します。文3。", body)
+        self.assertIn(f"- 読みを選んだ: {reading}（p1-s2「あなたに質問します。」）\n", body)
 
     def test_align_same_word_in_other_form_agrees(self):
         a = [{"id": "p1-s2", "route": "rewrite", "pattern": "型21d", "align": "質問する",
@@ -192,8 +169,8 @@ class Merge(unittest.TestCase):
               "fix": "あなたに聞く、を決めます。"}]
         merged, _ = jp.merge(self.us, [a, b], "agree")
         row = next(r for r in merged if r["id"] == "p1-s2")
-        self.assertEqual(row["route"], "ask")
-        self.assertEqual(row["fix"], "〔「質問する」とほかの回の言い方のどちらにそろえるか〕")
+        self.assertEqual((row["route"], row["fix"]), ("rewrite", "あなたに質問する、を決めます。"))
+        self.assertEqual(row["reading"], "そろえる語が回で分かれた（「質問する」とほかの回の言い方）。先の回の言い方で直した")
 
     def test_align_only_for_types_21(self):
         # other types and 21b/21c never compare align; a missing align is reported
@@ -205,21 +182,26 @@ class Merge(unittest.TestCase):
         self.assertEqual([r["route"] for r in merged], ["rewrite", "rewrite"])
         self.assertEqual(len([w for w in warnings if "has no align" in w]), 2)
 
-    def test_keep_wins_and_asks_are_union(self):
-        a = [{"id": "p1-s1", "route": "delete"}, {"id": "p1-s3", "route": "ask", "fix": "〔誰が決めたか〕"}]
-        b = [{"id": "p1-s1", "route": "keep"}]
+    def test_keep_wins(self):
+        a = [{"id": "p1-s1", "route": "delete"}, {"id": "p1-s3", "route": "rewrite", "fix": "三。"}]
+        b = [{"id": "p1-s1", "route": "keep"}, {"id": "p1-s3", "route": "rewrite", "fix": "参。"}]
         for mode in ("agree", "union"):
             merged, _ = jp.merge(self.us, [a, b], mode)
             routes = {r["id"]: r["route"] for r in merged}
-            self.assertNotEqual(routes.get("p1-s1"), "delete", mode)
-            self.assertEqual(routes["p1-s3"], "ask", mode)
+            self.assertEqual(routes, {"p1-s1": "keep", "p1-s3": "rewrite"}, mode)
 
-    def test_deadline_only_ask_dropped_and_unknown_id_warned(self):
-        a = [{"id": "p1-s1", "route": "ask", "fix": "〔いつまでに直すか〕"},
+    def test_ask_is_not_a_route_and_unknown_id_warned(self):
+        a = [{"id": "p1-s1", "route": "ask", "fix": "〔誰が決めたか〕"},
              {"id": "p9-s9", "route": "delete"}]
         merged, warnings = jp.merge(self.us, [a], "agree")
         self.assertEqual(merged, [])
-        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings, ["run 1: skipped 'p1-s1' (route 'ask')",
+                                    "run 1: skipped 'p9-s9' (route 'delete')"])
+        # a merged file from an earlier version: assemble skips its ask rows
+        body, log = jp.assemble([dict(u) for u in self.us], [{"id": "p1-s1", "route": "ask", "fix": "〔誰か〕"}])
+        self.assertEqual(log["skipped"], ["p1-s1"])
+        self.assertEqual(log["changes"], [])
+        self.assertNotIn("〔", body)
 
     def test_keep_twice_stays_as_keep_row(self):
         a = [{"id": "p1-s1", "route": "keep", "pattern": "型17"}, {"id": "p1-s2", "route": "delete"}]
@@ -228,17 +210,6 @@ class Merge(unittest.TestCase):
             merged, _ = jp.merge(self.us, [a, b], mode)
             self.assertEqual([(r["id"], r["route"]) for r in merged],
                              [("p1-s1", "keep"), ("p1-s2", "keep")], mode)
-
-    def test_keep_with_question_becomes_ask(self):
-        a = [{"id": "p1-s1", "route": "keep"}]
-        b = [{"id": "p1-s1", "route": "ask", "fix": "〔根拠は何か〕"}]
-        merged, _ = jp.merge(self.us, [a, b], "agree")
-        self.assertEqual([(r["route"], r["fix"]) for r in merged], [("ask", "〔根拠は何か〕")])
-
-    def test_two_questions_kept_and_deadline_one_dropped(self):
-        a = [{"id": "p1-s1", "route": "ask", "fix": "〔誰が判断したか〕〔いつまでに直すか〕〔根拠は何か〕"}]
-        merged, _ = jp.merge(self.us, [a], "agree")
-        self.assertEqual(merged[0]["fix"], "〔誰が判断したか〕〔根拠は何か〕")
 
     def test_cli_counts_keep_in_merge_and_log(self):
         tmp = tmpdir()
@@ -263,25 +234,45 @@ class Merge(unittest.TestCase):
         merged, _ = jp.merge(us, [[]], "agree")
         self.assertEqual(merged[0]["fix"], "結果は 12 秒から 3 秒になった。")
 
+    def test_reading_goes_with_the_rewrite_taken(self):
+        a = [{"id": "p1-s2", "route": "rewrite", "fix": "二の文。", "reading": "「それ」を\n直前の一の文と読んだ "},
+             {"id": "p1-s3", "route": "delete", "reading": "削る文には付かない"}]
+        b = [{"id": "p1-s2", "route": "rewrite", "fix": "弐の文。", "reading": "別の読み"},
+             {"id": "p1-s3", "route": "delete"}]
+        merged, _ = jp.merge(self.us, [a, b], "agree")
+        self.assertEqual(merged, [
+            {"id": "p1-s2", "route": "rewrite", "fix": "二の文。", "pattern": "", "reading": "「それ」を 直前の一の文と読んだ"},
+            {"id": "p1-s3", "route": "delete", "fix": "", "pattern": ""}])
+        # one run's reading alone is not an agreement
+        merged, _ = jp.merge(self.us, [a, []], "agree")
+        self.assertEqual(merged, [])
+
 
 class Assemble(unittest.TestCase):
     def build(self, text, findings):
         us = jp.units(text)
         return jp.assemble(us, findings)
 
-    def test_confirm_numbers_follow_body_order_and_merge_duplicates(self):
+    def test_readings_follow_body_order(self):
         text = "一つ目。二つ目。三つ目。\n\n四つ目。\n"
         body, log = self.build(text, [
-            {"id": "p2-s1", "route": "ask", "fix": "〔誰が決めたか〕"},
-            {"id": "p1-s3", "route": "delete", "ask": "〔根拠は何か〕"},
-            {"id": "p1-s1", "route": "ask", "fix": "〔誰が決めたか〕"},
+            {"id": "p2-s1", "route": "rewrite", "fix": "四番目。", "reading": "四の読み"},
+            {"id": "p1-s1", "route": "rewrite", "fix": "一番目。", "reading": "一の読み", "one_run": True},
+            {"id": "p1-s3", "route": "delete", "reading": "付かない"},
         ])
-        # the deleted sentence's question sits on the sentence before it
-        self.assertIn("一つ目。〔確認1〕二つ目。〔確認2〕", body)
-        self.assertNotIn("三つ目", body.split("---")[0])
-        self.assertIn("四つ目。\n", body)
-        self.assertIn("- 〔確認1〕誰が決めたか\n- 〔確認2〕根拠は何か\n", body)
-        self.assertEqual(len(log["confirm"]), 2)
+        self.assertEqual(body, "一番目。二つ目。\n\n四番目。\n\n---\n\n## 読みを選んだ箇所・見直す箇所\n\n"
+                               "- 読みを選んだ: 一の読み（p1-s1「一番目。」）\n"
+                               "- 読みを選んだ: 四の読み（p2-s1「四番目。」）\n"
+                               "- 片方の回だけが直した文: 原文に無い行動・出来事が増えていないか（p1-s1「一番目。」）\n")
+        self.assertEqual([x["id"] for x in log["readings"]], ["p1-s1", "p2-s1"])
+        self.assertEqual(log["readings"][0], {"id": "p1-s1", "reading": "一の読み", "after": "一番目。"})
+
+    def test_reverted_rewrite_lists_nothing(self):
+        text = "待ち時間は 1 時間 25 分ほどだった。\n"
+        body, log = self.build(text, [{"id": "p1-s1", "route": "rewrite", "fix": "待ち時間は 85 分だった。",
+                                       "reading": "読み", "one_run": True}])
+        self.assertEqual(body, text)
+        self.assertEqual((log["readings"], log["one_run"]), ([], []))
 
     def test_new_number_reverts(self):
         text = "待ち時間は 1 時間 25 分ほどだった。\n"
@@ -366,40 +357,6 @@ class Assemble(unittest.TestCase):
         self.assertEqual(kept[0]["before"], kept[0]["after"])
         self.assertEqual(log["unchanged_ids"], 1)
 
-    def test_two_questions_share_one_mark(self):
-        body, log = self.build("一つ目。二つ目。三つ目。\n", [
-            {"id": "p1-s1", "route": "ask", "fix": "〔誰が決めたか〕"},
-            {"id": "p1-s2", "route": "ask", "fix": "〔誰が判断したか〕〔根拠は何か〕"},
-            {"id": "p1-s3", "route": "ask", "fix": "〔根拠は何か〕〔出典は何か〕"},
-        ])
-        self.assertIn("一つ目。〔確認1〕二つ目。〔確認2〕三つ目。〔確認3〕", body)
-        self.assertIn("- 〔確認1〕誰が決めたか\n"
-                      "- 〔確認2〕\n  - 誰が判断したか\n  - 根拠は何か\n"
-                      "- 〔確認3〕出典は何か\n", body)
-        self.assertEqual(log["confirm"][1]["questions"], ["誰が判断したか", "根拠は何か"])
-
-
-class Marks(unittest.TestCase):
-    """The 〔確認n〕 mark sits right after the sentence's end mark, and whatever
-    separated it from the next sentence stays as it was."""
-
-    def build(self, text, findings):
-        return jp.assemble(jp.units(text), findings)[0].split("\n---\n")[0]
-
-    def test_mark_right_after_period_space_kept(self):
-        ask = [{"id": "p1-s1", "route": "ask", "fix": "〔誰か〕"}]
-        self.assertEqual(self.build("一つ目。 二つ目。\n", ask), "一つ目。〔確認1〕 二つ目。\n")
-        self.assertEqual(self.build("一つ目。二つ目。\n", ask), "一つ目。〔確認1〕二つ目。\n")
-        self.assertEqual(self.build("「引用です。」次の文。\n", ask), "「引用です。」〔確認1〕次の文。\n")
-
-    def test_mark_before_hard_break_spaces(self):
-        text = "一行目の文。  \n二行目の文。\n三行目。\n"
-        self.assertEqual(self.build(text, [{"id": "p1-s1", "route": "ask", "fix": "〔誰か〕"}]),
-                         "一行目の文。〔確認1〕  \n二行目の文。\n三行目。\n")
-        # a deleted line's question goes to the line before, still right after its period
-        self.assertEqual(self.build(text, [{"id": "p1-s2", "route": "delete", "ask": "〔誰か〕"}]),
-                         "一行目の文。〔確認1〕  \n三行目。\n")
-
 
 class Reports(unittest.TestCase):
     def build(self, text, findings):
@@ -421,7 +378,7 @@ class Reports(unittest.TestCase):
         text = "経理課が集計した。結果は翌日に出た。担当は全員に共有した。\n"
         body, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
         self.assertEqual(log["dangling"], [])
-        self.assertNotIn("確認欄", body)
+        self.assertNotIn("## 読みを選んだ箇所", body)
         # a longer head must be part of the word: この設定 does not point at 特定
         text = "原因を特定した。この設定を戻した。\n"
         _, log = self.build(text, [{"id": "p1-s1", "route": "delete"}])
@@ -464,11 +421,12 @@ class Reports(unittest.TestCase):
         _, log = self.build("一つ目の文。二つ目の文。\n", [{"id": "p1-s2", "route": "delete"}])
         self.assertEqual(log["orphans"], [])
 
-    def test_notes_follow_questions(self):
+    def test_notes_follow_readings(self):
         text = "経理課と営業課が集計した。両課は翌日に報告した。\n\n次の段落。\n"
-        body, _ = self.build(text, [{"id": "p1-s1", "route": "delete", "ask": "〔誰が決めたか〕"}])
-        lines = body.split("## 確認欄\n\n")[1].splitlines()
-        self.assertEqual(lines[0], "- 〔確認1〕誰が決めたか")
+        body, _ = self.build(text, [{"id": "p1-s1", "route": "delete"},
+                                    {"id": "p2-s1", "route": "rewrite", "fix": "次の段落です。", "reading": "読み"}])
+        lines = body.split("## 読みを選んだ箇所・見直す箇所\n\n")[1].splitlines()
+        self.assertEqual(lines[0], "- 読みを選んだ: 読み（p2-s1「次の段落です。」）")
         self.assertTrue(lines[1].startswith("- 削った文が指していた語が残っていません: 経理課・営業課"))
         self.assertEqual(lines[2], "- 1 文だけ残った段落: 〔両課は翌日に報告した。〕（p1-s2）")
 
@@ -518,9 +476,9 @@ class Join(unittest.TestCase):
         merged, _, body, _ = self.run_merge([[j], [other]])
         self.assertEqual([(m["id"], m.get("join")) for m in merged], [("p1-s1", ["p1-s1", "p1-s2"])])
         self.assertTrue(body.startswith(self.FIX + "\n"))
-        # union takes it, and asks since one run proposed it
+        # union takes it, and lists it since one run proposed it
         merged, _, _, _ = self.run_merge([[j], []], "union")
-        self.assertIn("書き直しで", merged[0]["ask"])
+        self.assertTrue(merged[0]["one_run"])
 
     def test_keep_in_span_drops_join(self):
         j = self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX)
@@ -541,13 +499,13 @@ class Join(unittest.TestCase):
 
     def test_union_join_drops_edits_inside(self):
         j = self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX)
-        rs = [{"id": "p1-s2", "route": "rewrite", "fix": "電話の人もいます。"},
-              {"id": "p1-s2", "route": "ask", "fix": "〔誰が電話で頼むか〕"}]
+        rs = [{"id": "p1-s2", "route": "rewrite", "fix": "電話の人もいます。"}]
         merged, warnings, body, _ = self.run_merge([[j], rs], "union")
         self.assertEqual(warnings, ["run 2: join p1-s1 drops rewrite p1-s2"])
-        self.assertEqual([(m["id"], m["route"]) for m in merged], [("p1-s1", "rewrite"), ("p1-s2", "ask")])
-        # the question about the folded sentence is marked on the joined one
-        self.assertTrue(body.startswith(self.FIX + "〔確認1〕\n"))
+        self.assertEqual([(m["id"], m["route"]) for m in merged], [("p1-s1", "rewrite")])
+        # the other run edited a sentence in the span: not a single run's rewrite
+        self.assertNotIn("one_run", merged[0])
+        self.assertTrue(body.startswith(self.FIX + "\n\n窓口は"))
 
     def test_added_fact_puts_back_every_sentence(self):
         j = self.join("p1-s1", ["p1-s1", "p1-s2"], "ボットが増えたため、電話で頼む人は週に3人です。")
@@ -557,12 +515,22 @@ class Join(unittest.TestCase):
         self.assertEqual(log["reverted"][0]["words"], ["ため", "3"])
         self.assertEqual(log["changes"], [])
 
+    def test_join_carries_its_reading(self):
+        j = dict(self.join("p1-s1", ["p1-s1", "p1-s2"], self.FIX), reading="電話の人を今の話と読んだ")
+        merged, _, body, log = self.run_merge([[j], [j]])
+        self.assertEqual(merged[0]["reading"], "電話の人を今の話と読んだ")
+        self.assertEqual(log["readings"], [{"id": "p1-s1", "reading": "電話の人を今の話と読んだ", "after": self.FIX}])
+        self.assertIn(f"- 読みを選んだ: 電話の人を今の話と読んだ（p1-s1「{self.FIX}」）\n", body)
+
 
 class SecondRound(unittest.TestCase):
     """ids, merge and assemble run again on a text assemble wrote (the reader's round)."""
     TEXT = "窓口は朝九時に開きます。担当は二人です。\n\n昼は一人になります。返事は翌日に送ります。急ぎは当日です。\n"
-    ROUND1 = [{"id": "p1-s1", "route": "ask", "fix": "〔二人にしたのは何のためか〕"},
-              {"id": "p1-s2", "route": "ask", "fix": "〔誰が決めたか〕"}]
+    ROUND1 = [{"id": "p1-s1", "route": "rewrite", "fix": "窓口は朝九時に開けます。", "reading": "窓口のための時刻と読んだ"},
+              {"id": "p1-s2", "route": "rewrite", "fix": "担当は二人。", "reading": "二人を担当の 2 人と読んだ"}]
+    HEAD = "---\n\n## 読みを選んだ箇所・見直す箇所\n\n"
+    LIST = ("- 読みを選んだ: 窓口のための時刻と読んだ（p1-s1「窓口は朝九時に開けます。」）\n"
+            "- 読みを選んだ: 二人を担当の 2 人と読んだ（p1-s2「担当は二人。」）\n")
 
     def first(self):
         us = jp.units(self.TEXT)
@@ -575,98 +543,47 @@ class SecondRound(unittest.TestCase):
         body, log = jp.assemble(jp.units(text), merged)
         return merged, warnings, body, log
 
-    def test_confirmation_list_is_one_raw_unit(self):
+    def test_list_is_one_raw_unit(self):
         text = self.first()
+        self.assertTrue(text.endswith("急ぎは当日です。\n\n" + self.HEAD + self.LIST))
         us = jp.units(text)
         box = us[-1]
         self.assertTrue(box["raw"] and box["confirm"])
-        self.assertEqual(box["text"], "---\n\n## 確認欄\n\n- 〔確認1〕二人にしたのは何のためか\n- 〔確認2〕誰が決めたか")
+        self.assertEqual(box["text"], self.HEAD + self.LIST.rstrip("\n"))
         self.assertEqual(jp.render(us), jp.expected_body(text))
         # the finder sees neither the list nor its heading
-        self.assertNotIn("確認欄", "".join(u["text"] for u in us if not u.get("raw")))
-        # marks stay in the sentences: one leads the next sentence, one is a sentence of its own
-        self.assertEqual([u["text"] for u in us if u["para"] == 1],
-                         ["窓口は朝九時に開きます。", "〔確認1〕担当は二人です。", "〔確認2〕"])
+        self.assertNotIn("読みを選んだ", "".join(u["text"] for u in us if not u.get("raw")))
+        self.assertEqual([u["text"] for u in us if u["para"] == 1], ["窓口は朝九時に開けます。", "担当は二人。"])
 
     def test_list_not_in_assemble_form_is_split_as_before(self):
-        text = self.first().replace("- 〔確認2〕誰が決めたか", "誰が決めたか")
+        text = self.first().replace("- 読みを選んだ: 二人を", "二人を")
         self.assertFalse(any(u.get("confirm") for u in jp.units(text)))
 
-    def test_second_questions_go_on_from_the_first_list(self):
-        ask = {"id": "p2-s2", "route": "ask", "fix": "〔決まりの説明か、実際にあった出来事か〕"}
-        _, _, body, log = self.second([[ask]])
-        self.assertEqual(body.count("## 確認欄"), 1)
-        self.assertIn("返事は翌日に送ります。〔確認3〕急ぎは当日です。", body)
-        self.assertTrue(body.endswith("## 確認欄\n\n- 〔確認1〕二人にしたのは何のためか\n- 〔確認2〕誰が決めたか\n"
-                                      "- 〔確認3〕決まりの説明か、実際にあった出来事か\n"))
-        self.assertEqual([c["no"] for c in log["confirm"]], [3])
+    def test_second_readings_go_to_the_end_of_the_first_list(self):
+        r = {"id": "p2-s2", "route": "rewrite", "fix": "返事は翌日に送る決まりです。", "reading": "決まりの説明と読んだ"}
+        _, _, body, log = self.second([[r]])
+        self.assertEqual(body.count("## 読みを選んだ箇所・見直す箇所"), 1)
+        self.assertTrue(body.endswith(self.LIST + "- 読みを選んだ: 決まりの説明と読んだ（p2-s2「返事は翌日に送る決まりです。」）\n"))
+        self.assertEqual([x["id"] for x in log["readings"]], ["p2-s2"])
 
     def test_notes_go_to_the_same_list(self):
         _, _, body, log = self.second([[{"id": "p2-s3", "route": "delete"}, {"id": "p2-s2", "route": "delete"}]])
-        self.assertEqual(body.count("## 確認欄"), 1)
-        self.assertTrue(body.endswith("- 〔確認2〕誰が決めたか\n- 1 文だけ残った段落: 〔昼は一人になります。〕（p2-s1）\n"))
+        self.assertEqual(body.count("## 読みを選んだ箇所・見直す箇所"), 1)
+        self.assertTrue(body.endswith(self.LIST + "- 1 文だけ残った段落: 〔昼は一人になります。〕（p2-s1）\n"))
 
-    def test_join_over_a_mark_is_not_taken(self):
-        j = {"id": "p1-s2", "route": "rewrite", "fix": "担当は二人です。", "join": ["p1-s2", "p1-s3"]}
-        for mode in ("agree", "union"):
-            merged, warnings, body, _ = self.second([[j]], mode)
-            self.assertEqual(merged, [], mode)
-            self.assertEqual(warnings, ["run 1: join over mark p1-s2"], mode)
-            self.assertEqual(body, self.first(), mode)
-
-    def test_rewrite_keeps_its_marks(self):
-        j = {"id": "p1-s1", "route": "rewrite", "fix": "窓口は朝九時に開き、担当は二人です。", "join": ["p1-s1", "p1-s2"]}
-        _, warnings, body, log = self.second([[j]])
-        self.assertEqual(warnings, [])
-        # 〔確認1〕 belonged to the first sentence; it stays at the end of the joined one
-        self.assertTrue(body.startswith("窓口は朝九時に開き、担当は二人です。〔確認1〕〔確認2〕\n\n"))
-        r = {"id": "p1-s2", "route": "rewrite", "fix": "担当は二人。"}
-        _, _, body, _ = self.second([[r]])
-        self.assertTrue(body.startswith("窓口は朝九時に開きます。〔確認1〕担当は二人。〔確認2〕\n\n"))
-
-    def test_words_of_the_list_and_marks_are_not_the_original(self):
-        # 「ため」 is only in the first round's question, 「1」 only in its marks
-        for fix, words in (("昼は休憩のため一人になります。", ["ため"]), ("昼は1人になります。", ["1"])):
+    def test_words_of_the_list_are_not_the_original(self):
+        # 「ため」 and 「2」 are only in the first round's list
+        for fix, words in (("昼は休憩のため一人になります。", ["ため"]), ("昼は2人になります。", ["2"])):
             r = {"id": "p2-s1", "route": "rewrite", "fix": fix}
             _, _, body, log = self.second([[r]])
             self.assertEqual(log["reverted"][0]["words"], words, fix)
             self.assertEqual(body, self.first(), fix)
 
-
-class Effect(unittest.TestCase):
-    """The confirmation list says what the reader is stuck on, after the question."""
-    TEXT = "原稿 3 本でおよそ 10 万トークンかかります。窓口は朝九時に開きます。\n"
-    ASK = {"id": "p1-s1", "route": "ask", "fix": "〔10 万トークンは 3 本の合計か〕",
-           "effect": "自分の原稿でどれだけかかるか見積もれない。"}
-
-    def run_merge(self, runs, mode="agree"):
-        merged, _ = jp.merge(jp.units(self.TEXT), runs, mode)
-        body, log = jp.assemble(jp.units(self.TEXT), merged)
-        return merged, body.split("## 確認欄\n\n")[1]
-
-    def test_question_then_effect(self):
-        merged, box = self.run_merge([[self.ASK], [dict(self.ASK, effect="見積もれない")]])
-        self.assertEqual(merged[0]["effect"], "自分の原稿でどれだけかかるか見積もれない")
-        self.assertEqual(box, "- 〔確認1〕10 万トークンは 3 本の合計か（読者が困ること: 自分の原稿でどれだけかかるか見積もれない）\n")
-
-    def test_no_effect_for_merge_own_question(self):
-        rw = {"id": "p1-s1", "route": "rewrite", "fix": "原稿 3 本の合計で、およそ 10 万トークンかかります。",
-              "effect": "書き直しの理由"}
-        merged, box = self.run_merge([[rw, self.ASK], []], "union")
-        self.assertEqual(merged[0]["effect"], "自分の原稿でどれだけかかるか見積もれない")
-        lines = box.splitlines()
-        self.assertTrue(lines[1].endswith("合計か（読者が困ること: 自分の原稿でどれだけかかるか見積もれない）"))
-        self.assertTrue(lines[2].endswith("増えていないか"))
-        # a rewrite alone: only the question merge adds, so no effect
-        merged, box = self.run_merge([[rw], []], "union")
-        self.assertNotIn("effect", merged[0])
-        self.assertNotIn("読者が困ること", box)
-
-    def test_finding_without_effect_is_as_before(self):
-        ask = {k: v for k, v in self.ASK.items() if k != "effect"}
-        merged, box = self.run_merge([[ask]])
-        self.assertNotIn("effect", merged[0])
-        self.assertEqual(box, "- 〔確認1〕10 万トークンは 3 本の合計か\n")
+    def test_join_in_the_second_round(self):
+        j = {"id": "p2-s2", "route": "rewrite", "fix": "返事は翌日に送り、急ぎは当日です。", "join": ["p2-s2", "p2-s3"]}
+        _, warnings, body, _ = self.second([[j]])
+        self.assertEqual(warnings, [])
+        self.assertIn("昼は一人になります。返事は翌日に送り、急ぎは当日です。\n\n---\n", body)
 
 
 class Extract(unittest.TestCase):

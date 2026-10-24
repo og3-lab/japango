@@ -1,0 +1,5 @@
+{"id": "p3-s1", "pattern": "型21c 指す中身を言わない指示語", "quote": "それは", "effect": "何を見直すか分からない", "route": "rewrite", "fix": "担当の人数は毎週月曜に見直します。", "reading": "「それ」を、前の段落の担当の人数と読んだ"}
+{"id": "p3-s3", "pattern": "型21d 人の呼び名の揺れ", "quote": "お客様", "effect": "別の人が出てきたと取る", "route": "rewrite", "align": "申込者", "fix": "申込者には翌日に返事をします。"}
+{"id": "p2-s2", "pattern": "型28 文末の単調", "quote": "担当は二人です。昼は一人になります。", "effect": "メモのように聞こえる", "route": "rewrite", "join": ["p2-s2", "p2-s3"], "fix": "担当は二人で、昼は一人になります。", "reading": "昼の一人を\n担当の人数と読んだ"}
+{"id": "p4-s1", "pattern": "型31", "quote": "前日まで", "effect": "x", "route": "ask", "fix": "〔誰が決めたか〕"}
+{"id": "p1-s1", "pattern": "型19", "quote": "窓口の案内", "effect": "x", "route": "rewrite", "fix": "# 窓口の開く時間", "reading": "見出しを時間の話と読んだ"}
